@@ -407,7 +407,7 @@ def _render_login():
                         st.rerun()
                     else:
                         st.error("Invalid credentials or account is inactive.")
-            st.markdown('<div class="login-hint">Default admin: admin@qualesce.com / Admin@123</div>',
+            st.markdown('<div class="login-hint"></div>',
                         unsafe_allow_html=True)
 
 if st.session_state.current_user is None:
