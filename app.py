@@ -2512,40 +2512,32 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
     st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Configure integrations and notifications</p>', unsafe_allow_html=True)
 
     with st.expander("Outlook Email Settings", expanded=True):
-        _cfg = auth.get_user_email_settings(cu["id"])
-        _global_cfg = auth.get_email_settings()
-        _fallback_note = (
-            f'<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;'
-            f'padding:8px 14px;font-size:11px;color:#1D4ED8;margin-bottom:10px">'
-            f'Global fallback (admin): <b>{_global_cfg["outlook_email"]}</b> — '
-            f'used if you have not saved your own credentials below.</div>'
-        ) if _global_cfg["outlook_email"] and not _cfg["outlook_email"] else ""
+        _cfg = auth.get_email_settings()
         st.markdown(
-            '<p style="color:#64748B;font-size:12px;margin-bottom:8px">'
-            'Configure <b>your own</b> Outlook / Office 365 account. Task assignment emails '
-            'will be sent from this address. Each role (admin, lead, manager) can have a different email.</p>',
+            '<p style="color:#64748B;font-size:12px;margin-bottom:10px">'
+            'Configure the Outlook / Office 365 account used to send task assignment emails '
+            'and notifications. Credentials are stored in the local database.</p>',
             unsafe_allow_html=True)
         if _cfg["outlook_email"]:
             st.markdown(
                 f'<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;'
-                f'padding:10px 14px;font-size:12px;color:#16A34A;margin-bottom:10px">'
-                f'Your configured email: <b>{_cfg["outlook_email"]}</b>'
+                f'padding:10px 14px;font-size:12px;color:#16A34A;margin-bottom:12px">'
+                f'Currently configured: <b>{_cfg["outlook_email"]}</b>'
                 f'&nbsp;&nbsp;·&nbsp;&nbsp;Last updated: {_cfg["updated_at"] or "—"}'
                 f'</div>',
                 unsafe_allow_html=True)
         else:
             st.markdown(
                 '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;'
-                'padding:10px 14px;font-size:12px;color:#92400E;margin-bottom:10px">'
-                'Not configured — enter your email and password below.</div>',
+                'padding:10px 14px;font-size:12px;color:#92400E;margin-bottom:12px">'
+                'Not configured — task notification emails will not be sent until credentials are saved below.'
+                '</div>',
                 unsafe_allow_html=True)
-        if _fallback_note:
-            st.markdown(_fallback_note, unsafe_allow_html=True)
         _sc1, _sc2 = st.columns(2)
         _s_email = _sc1.text_input(
-            "Your Outlook / Office 365 Email",
+            "Outlook / Office 365 Email",
             value=_cfg["outlook_email"],
-            placeholder="yourname@yourcompany.com",
+            placeholder="sender@yourcompany.com",
             key="settings_outlook_email")
         _s_pwd = _sc2.text_input(
             "Password / App Password",
@@ -2559,8 +2551,8 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
             if not _s_email.strip() or not _s_pwd.strip():
                 st.error("Both email and password are required.")
             else:
-                auth.save_user_email_settings(cu["id"], _s_email.strip(), _s_pwd.strip())
-                st.session_state.toast = {"msg": "Your Outlook settings saved!", "type": "success"}
+                auth.save_email_settings(_s_email.strip(), _s_pwd.strip())
+                st.session_state.toast = {"msg": "Outlook settings saved!", "type": "success"}
                 st.rerun()
         if _sc4.button("Test Connection", key="settings_test_outlook"):
             if not _s_email.strip() or not _s_pwd.strip():
@@ -2577,7 +2569,7 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
                 else:
                     st.error(f"Connection failed: {_test_err}")
         if _sc5.button("Clear / Disable Email", key="settings_clear_outlook"):
-            auth.save_user_email_settings(cu["id"], "", "")
+            auth.save_email_settings("", "")
             st.session_state.toast = {"msg": "Email settings cleared.", "type": "info"}
             st.rerun()
 
@@ -2756,19 +2748,19 @@ elif st.session_state.active_tab == "tasks":
         def _render_all_tasks_panel():
             with st.expander("Assign New Task", expanded=False):
                 # Show which email will be used to send the task notification
-                _preview_email, _ = email_utils._smtp_creds_for_role(role, cu["id"])
-                if _preview_email:
+                _preview_cfg = auth.get_email_settings()
+                if _preview_cfg["outlook_email"]:
                     st.markdown(
                         f'<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;'
                         f'padding:8px 14px;font-size:11px;color:#1D4ED8;margin-bottom:10px">'
-                        f'Notification email will be sent from: <b>{_preview_email}</b></div>',
+                        f'Notification email will be sent from: <b>{_preview_cfg["outlook_email"]}</b></div>',
                         unsafe_allow_html=True)
                 else:
                     st.markdown(
                         '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;'
                         'padding:8px 14px;font-size:11px;color:#92400E;margin-bottom:10px">'
                         'No email configured — task will be assigned but no notification email will be sent. '
-                        'Go to Settings tab to add your Outlook credentials.</div>',
+                        'Go to Settings tab to add Outlook credentials.</div>',
                         unsafe_allow_html=True)
                 _assignable = auth.get_employees_and_leads()
                 if not _assignable:
@@ -2793,12 +2785,9 @@ elif st.session_state.active_tab == "tasks":
                             _sel_idx = _emp_opts.index(_emp_sel)
                             _sel_emp = _assignable[_sel_idx]
                             auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
-                            _s_email, _s_pwd = email_utils._smtp_creds_for_role(role, cu["id"])
                             _mail_ok, _mail_err = email_utils.send_task_assigned_email(
                                 _sel_emp["email"], _sel_emp["name"],
-                                _nt_title, cu["name"], _nt_due.strip(),
-                                sender_email=_s_email,
-                                sender_password=_s_pwd)
+                                _nt_title, cu["name"], _nt_due.strip())
                             save_to_excel(st.session_state.projects)
                             if not _mail_ok and _mail_err:
                                 st.warning(f"Task assigned but email failed: {_mail_err}. Check your Outlook settings in the Settings tab.")
