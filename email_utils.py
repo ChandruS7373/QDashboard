@@ -6,7 +6,7 @@ from email.mime.text import MIMEText
 
 
 def _smtp_creds():
-    # 1. DB (configured via admin UI)
+    # 1. Try database settings (configured via the admin UI)
     try:
         import auth as _auth
         cfg = _auth.get_email_settings()
@@ -14,7 +14,7 @@ def _smtp_creds():
             return cfg["outlook_email"], cfg["outlook_password"]
     except Exception:
         pass
-    # 2. secrets.toml / environment variable
+    # 2. Fall back to secrets.toml / environment variable
     try:
         import streamlit as st
         email = st.secrets.get("OUTLOOK_EMAIL", "")
@@ -29,7 +29,7 @@ def _smtp_creds():
 def send_email(to_email: str, subject: str, html_body: str) -> tuple[bool, str]:
     sender, password = _smtp_creds()
     if not sender or not password:
-        return False, "SMTP credentials not configured in Outlook Email Settings"
+        return False, "SMTP credentials not configured in secrets.toml"
     msg = MIMEMultipart("alternative")
     msg["From"] = sender
     msg["To"] = to_email

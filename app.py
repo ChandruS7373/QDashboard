@@ -372,13 +372,13 @@ if "dash_client_filter"    not in st.session_state: st.session_state.dash_client
 if "dash_slicers_expanded" not in st.session_state: st.session_state.dash_slicers_expanded = False
 if "current_user"         not in st.session_state: st.session_state.current_user         = None
 if "reset_pwd_uid"        not in st.session_state: st.session_state.reset_pwd_uid        = None
-if "user_edit_id"         not in st.session_state: st.session_state.user_edit_id         = None
 if "login_attempts"       not in st.session_state: st.session_state.login_attempts       = 0
 if "forgot_step"          not in st.session_state: st.session_state.forgot_step          = None
 if "forgot_email"         not in st.session_state: st.session_state.forgot_email         = ""
 if "forgot_otp"           not in st.session_state: st.session_state.forgot_otp           = ""
 if "forgot_otp_expiry"    not in st.session_state: st.session_state.forgot_otp_expiry    = None
 if "forgot_uid"           not in st.session_state: st.session_state.forgot_uid           = None
+if "user_edit_id"         not in st.session_state: st.session_state.user_edit_id         = None
 if "task_comment_view" not in st.session_state: st.session_state.task_comment_view = None
 if "poc_row_edit"     not in st.session_state: st.session_state.poc_row_edit     = None
 
@@ -683,7 +683,8 @@ def _render_login():
                             st.rerun()
                         else:
                             st.session_state.login_attempts += 1
-                            remaining = max(0, 3 - st.session_state.login_attempts)
+                            attempts = st.session_state.login_attempts
+                            remaining = max(0, 3 - attempts)
                             if remaining > 0:
                                 st.error(f"Invalid credentials or account is inactive. ({remaining} attempt{'s' if remaining != 1 else ''} left before reset option appears)")
                             else:
@@ -2228,7 +2229,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
         st.markdown(
             '<p style="color:#64748B;font-size:12px;margin-bottom:10px">'
             'Configure the Outlook / Office 365 account used to send password reset codes '
-            'and task notifications. Credentials are stored in the local database.</p>',
+            'and task notifications. These credentials are stored in the local database.</p>',
             unsafe_allow_html=True)
         if _cfg["outlook_email"]:
             st.markdown(
