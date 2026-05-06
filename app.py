@@ -769,7 +769,7 @@ _n = len(_tab_defs)
 if role == "admin":
     nav_c = st.columns([1] * _n + [0.9, 0.6, 0.55])
 elif role in ("lead", "manager"):
-    nav_c = st.columns([1] * _n + [0.55])
+    nav_c = st.columns([1] * _n + [0.6, 0.55])
 else:
     nav_c = st.columns([1] * _n + [0.55])
 
@@ -797,7 +797,14 @@ if role == "admin":
         st.session_state.current_user = None
         st.rerun()
 elif role in ("lead", "manager"):
-    if nav_c[_n].button("Logout", use_container_width=True):
+    if nav_c[_n].button("Sync", use_container_width=True):
+        st.session_state.projects = load_from_excel()
+        st.session_state.excel_mtime = excel_mtime()
+        ids = pd.to_numeric(st.session_state.projects.get("id", pd.Series([])), errors="coerce").dropna()
+        st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
+        st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
+        st.rerun()
+    if nav_c[_n + 1].button("Logout", use_container_width=True):
         st.session_state.current_user = None
         st.rerun()
 else:
