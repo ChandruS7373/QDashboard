@@ -2755,6 +2755,23 @@ elif st.session_state.active_tab == "tasks":
 
         def _render_all_tasks_panel():
             with st.expander("Assign New Task", expanded=False):
+                # Show which email will be used to send the task notification
+                _preview_cfg = auth.get_user_email_settings(cu["id"])
+                if not _preview_cfg["outlook_email"]:
+                    _preview_cfg = auth.get_email_settings()
+                if _preview_cfg["outlook_email"]:
+                    st.markdown(
+                        f'<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;'
+                        f'padding:8px 14px;font-size:11px;color:#1D4ED8;margin-bottom:10px">'
+                        f'Notification email will be sent from: <b>{_preview_cfg["outlook_email"]}</b></div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;'
+                        'padding:8px 14px;font-size:11px;color:#92400E;margin-bottom:10px">'
+                        'No email configured — task will be assigned but no notification email will be sent. '
+                        'Go to Settings tab to add your Outlook credentials.</div>',
+                        unsafe_allow_html=True)
                 _assignable = auth.get_employees_and_leads()
                 if not _assignable:
                     st.warning("No employee or lead accounts found. Create users under the Users tab first.")
