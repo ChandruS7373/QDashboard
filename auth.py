@@ -375,6 +375,15 @@ def get_all_tasks() -> list:
     return [_task(r) for r in rows]
 
 
+def get_all_tasks_asc() -> list:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(_TASK_SQL + " ORDER BY t.id ASC")
+    rows = c.fetchall()
+    conn.close()
+    return [_task(r) for r in rows]
+
+
 def get_user_tasks(user_id: int) -> list:
     conn = get_conn()
     c = conn.cursor()

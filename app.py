@@ -127,7 +127,7 @@ def save_to_excel(df: pd.DataFrame):
     sold_df = pd.DataFrame(sold_records) if sold_records else pd.DataFrame(
         columns=["id","tool_name","client","no_of_licenses","start_date","end_date","notes","created_at"]
     )
-    task_records = auth.get_all_tasks()
+    task_records = auth.get_all_tasks_asc()
     task_df = pd.DataFrame(task_records) if task_records else pd.DataFrame(
         columns=["id","title","description","status","progress","due_date","start_date",
                  "created_at","updated_at","comment","assigned_to","assigned_to_email",
@@ -402,9 +402,62 @@ def get_stats(d):
 
 def call_claude(api_key, msgs, df):
     client = anthropic.Anthropic(api_key=api_key)
-    proj_ctx = "\n\nLIVE PROJECT DATA:\n" + "\n".join(
-        f"- {r['name']} | {r['client']} | {r['employee']} | {r['status']}"
+
+    # ── Projects (from Excel / session state) ─────────────────────────────────
+    proj_lines = "\n".join(
+        f"- {r['name']} | Client: {r['client']} | Employee: {r['employee']} | Status: {r['status']}"
+        + (f" | Hours Saved: {r['hours_saved']}" if r.get('hours_saved') else "")
+        + (f" | Cost Saved: {r['cost_saved']}" if r.get('cost_saved') else "")
         for _, r in df.iterrows())
+
+    # ── Tasks (live from DB) ───────────────────────────────────────────────────
+    try:
+        _tasks = auth.get_all_tasks()
+        task_lines = "\n".join(
+            f"- [{t['status']} {t['progress']}%] {t['title']} | Assigned to: {t['assigned_to']} | By: {t['assigned_by']}"
+            + (f" | Due: {t['due_date']}" if t.get('due_date') else "")
+            + (f" | Note: {t['comment']}" if t.get('comment') else "")
+            for t in _tasks
+        ) if _tasks else "No tasks yet."
+    except Exception:
+        task_lines = "Task data unavailable."
+
+    # ── Licenses (live from DB) ────────────────────────────────────────────────
+    try:
+        _lics = auth.get_all_licenses()
+        lic_lines = "\n".join(
+            f"- {l['tool_name']} | Qty: {l['no_of_licenses']} | {l['start_date']} to {l['end_date']}"
+            for l in _lics
+        ) if _lics else "No licenses."
+    except Exception:
+        lic_lines = "License data unavailable."
+
+    # ── Users (live from DB) ───────────────────────────────────────────────────
+    try:
+        _users = auth.get_all_users()
+        user_lines = "\n".join(
+            f"- {u[1]} | {u[3].upper()} | {u[2]}"
+            for u in _users if u[4]  # only active users
+        ) if _users else "No users."
+    except Exception:
+        user_lines = "User data unavailable."
+
+    live_ctx = f"""
+
+LIVE DATABASE (source: projects.xlsx + qualesce.db):
+
+[PROJECTS — {len(df)} total]
+{proj_lines}
+
+[TASKS — {len(_tasks) if isinstance(_tasks, list) else 0} total]
+{task_lines}
+
+[LICENSES]
+{lic_lines}
+
+[TEAM MEMBERS]
+{user_lines}"""
+
     api_msgs = [{"role": m["role"], "content": m["content"]} for m in msgs[-12:]]
     while api_msgs and api_msgs[0]["role"] != "user":
         api_msgs = api_msgs[1:]
@@ -413,7 +466,7 @@ def call_claude(api_key, msgs, df):
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=500,
-        system=SYSTEM_PROMPT + proj_ctx,
+        system=SYSTEM_PROMPT + live_ctx,
         messages=api_msgs)
     return resp.content[0].text
 
