@@ -9,6 +9,7 @@ import re
 from datetime import datetime, date, timedelta
 from jinja2 import Template
 import auth
+import email_utils
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -372,6 +373,12 @@ if "dash_slicers_expanded" not in st.session_state: st.session_state.dash_slicer
 if "current_user"         not in st.session_state: st.session_state.current_user         = None
 if "reset_pwd_uid"        not in st.session_state: st.session_state.reset_pwd_uid        = None
 if "user_edit_id"         not in st.session_state: st.session_state.user_edit_id         = None
+if "login_attempts"       not in st.session_state: st.session_state.login_attempts       = 0
+if "forgot_step"          not in st.session_state: st.session_state.forgot_step          = None
+if "forgot_email"         not in st.session_state: st.session_state.forgot_email         = ""
+if "forgot_otp"           not in st.session_state: st.session_state.forgot_otp           = ""
+if "forgot_otp_expiry"    not in st.session_state: st.session_state.forgot_otp_expiry    = None
+if "forgot_uid"           not in st.session_state: st.session_state.forgot_uid           = None
 if "task_comment_view" not in st.session_state: st.session_state.task_comment_view = None
 if "poc_row_edit"     not in st.session_state: st.session_state.poc_row_edit     = None
 
@@ -578,23 +585,116 @@ def _render_login():
               <div style="font-size:12px;color:#64748B;margin-top:4px">AI Project Manager Platform</div>
             </div>
             """, unsafe_allow_html=True)
-            with st.form("login_form"):
-                email    = st.text_input("Email Address", placeholder="you@company.com")
-                password = st.text_input("Password", type="password", placeholder="••••••••")
-                submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
-            if submitted:
-                if not email.strip() or not password:
-                    st.error("Email and password are required.")
-                else:
-                    user = auth.authenticate(email, password)
-                    if user:
-                        st.session_state.current_user = user
-                        st.session_state.active_tab   = "tasks" if user["role"] == "employee" else "dashboard"
-                        st.rerun()
+
+            step = st.session_state.forgot_step
+
+            # ── Step 1: Enter email to receive OTP ────────────────────────────
+            if step == "enter_email":
+                st.markdown('<p style="font-size:13px;color:#475569;margin-bottom:8px">Enter your account email to receive a reset code.</p>', unsafe_allow_html=True)
+                with st.form("fp_email_form"):
+                    fp_email = st.text_input("Account Email", placeholder="you@company.com")
+                    col_send, col_back = st.columns(2)
+                    send_btn = col_send.form_submit_button("Send Code", use_container_width=True, type="primary")
+                    back_btn = col_back.form_submit_button("Back to Login", use_container_width=True)
+                if send_btn:
+                    if not fp_email.strip():
+                        st.error("Please enter your email.")
                     else:
-                        st.error("Invalid credentials or account is inactive.")
-            st.markdown('<div class="login-hint"> </div>',
-                        unsafe_allow_html=True)
+                        user = auth.get_user_by_email(fp_email.strip())
+                        if not user:
+                            st.error("No active account found with that email.")
+                        else:
+                            otp = email_utils.generate_otp()
+                            ok, err = email_utils.send_otp_email(user["email"], user["name"], otp)
+                            if ok:
+                                st.session_state.forgot_otp        = otp
+                                st.session_state.forgot_otp_expiry = datetime.now().timestamp() + 600
+                                st.session_state.forgot_uid        = user["id"]
+                                st.session_state.forgot_email      = user["email"]
+                                st.session_state.forgot_step       = "enter_otp"
+                                st.rerun()
+                            else:
+                                st.error(f"Failed to send email: {err}")
+                if back_btn:
+                    st.session_state.forgot_step = None
+                    st.rerun()
+
+            # ── Step 2: Enter OTP ─────────────────────────────────────────────
+            elif step == "enter_otp":
+                st.markdown(f'<p style="font-size:13px;color:#475569;margin-bottom:8px">A 6-digit code was sent to <b>{st.session_state.forgot_email}</b>. Enter it below.</p>', unsafe_allow_html=True)
+                with st.form("fp_otp_form"):
+                    entered_otp = st.text_input("Reset Code", placeholder="123456", max_chars=6)
+                    col_verify, col_back = st.columns(2)
+                    verify_btn = col_verify.form_submit_button("Verify Code", use_container_width=True, type="primary")
+                    back_btn   = col_back.form_submit_button("Back", use_container_width=True)
+                if verify_btn:
+                    expiry = st.session_state.forgot_otp_expiry or 0
+                    if datetime.now().timestamp() > expiry:
+                        st.error("Code expired. Please request a new one.")
+                        st.session_state.forgot_step = "enter_email"
+                        st.rerun()
+                    elif entered_otp.strip() != st.session_state.forgot_otp:
+                        st.error("Incorrect code. Please try again.")
+                    else:
+                        st.session_state.forgot_step = "new_pwd"
+                        st.rerun()
+                if back_btn:
+                    st.session_state.forgot_step = "enter_email"
+                    st.rerun()
+
+            # ── Step 3: Set new password ──────────────────────────────────────
+            elif step == "new_pwd":
+                st.markdown('<p style="font-size:13px;color:#475569;margin-bottom:8px">Choose a new password for your account.</p>', unsafe_allow_html=True)
+                with st.form("fp_newpwd_form"):
+                    new_pwd  = st.text_input("New Password", type="password", placeholder="Min 6 characters")
+                    conf_pwd = st.text_input("Confirm Password", type="password", placeholder="Repeat password")
+                    save_btn = st.form_submit_button("Reset Password", use_container_width=True, type="primary")
+                if save_btn:
+                    if len(new_pwd) < 6:
+                        st.error("Password must be at least 6 characters.")
+                    elif new_pwd != conf_pwd:
+                        st.error("Passwords do not match.")
+                    else:
+                        auth.reset_password(st.session_state.forgot_uid, new_pwd)
+                        st.session_state.forgot_step       = None
+                        st.session_state.forgot_otp        = ""
+                        st.session_state.forgot_otp_expiry = None
+                        st.session_state.forgot_uid        = None
+                        st.session_state.forgot_email      = ""
+                        st.session_state.login_attempts    = 0
+                        st.success("Password reset! You can now sign in.")
+                        st.rerun()
+
+            # ── Normal login form ─────────────────────────────────────────────
+            else:
+                with st.form("login_form"):
+                    email    = st.text_input("Email Address", placeholder="you@company.com")
+                    password = st.text_input("Password", type="password", placeholder="••••••••")
+                    submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
+                if submitted:
+                    if not email.strip() or not password:
+                        st.error("Email and password are required.")
+                    else:
+                        user = auth.authenticate(email, password)
+                        if user:
+                            st.session_state.current_user  = user
+                            st.session_state.login_attempts = 0
+                            st.session_state.active_tab    = "tasks" if user["role"] == "employee" else "dashboard"
+                            st.rerun()
+                        else:
+                            st.session_state.login_attempts += 1
+                            remaining = max(0, 3 - st.session_state.login_attempts)
+                            if remaining > 0:
+                                st.error(f"Invalid credentials or account is inactive. ({remaining} attempt{'s' if remaining != 1 else ''} left before reset option appears)")
+                            else:
+                                st.error("Invalid credentials or account is inactive.")
+                if st.session_state.login_attempts >= 3:
+                    st.markdown('<p style="text-align:center;font-size:12px;color:#94A3B8;margin:8px 0 4px">Too many failed attempts</p>', unsafe_allow_html=True)
+                    if st.button("Forgot Password?", use_container_width=True):
+                        st.session_state.forgot_step = "enter_email"
+                        st.rerun()
+
+            st.markdown('<div class="login-hint"> </div>', unsafe_allow_html=True)
 
 if st.session_state.current_user is None:
     _render_login()
@@ -648,7 +748,7 @@ elif role == "sales":
 elif role in ("lead", "manager"):
     _tab_defs = [("dashboard", "Dashboard"), ("projects", "Projects"),
                  ("presales", "Presales/POC"), ("license", "License"),
-                 ("agent", "AI Agent"), ("tasks", "Tasks")]
+                 ("agent", "AI Agent"), ("tasks", "Tasks"), ("settings", "Settings")]
 else:
     _tab_defs = [("dashboard", "Dashboard"), ("projects", "Projects"),
                  ("presales", "Presales/POC"), ("license", "License"),
@@ -2122,6 +2222,55 @@ elif st.session_state.active_tab == "users" and role == "admin":
 
     _users_cache = auth.get_all_users()
 
+    # ── Outlook Email Settings ────────────────────────────────────────────────
+    with st.expander("Outlook Email Settings", expanded=False):
+        _cfg = auth.get_email_settings()
+        st.markdown(
+            '<p style="color:#64748B;font-size:12px;margin-bottom:10px">'
+            'Configure the Outlook / Office 365 account used to send password reset codes '
+            'and task notifications. Credentials are stored in the local database.</p>',
+            unsafe_allow_html=True)
+        if _cfg["outlook_email"]:
+            st.markdown(
+                f'<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;'
+                f'padding:10px 14px;font-size:12px;color:#16A34A;margin-bottom:12px">'
+                f'Currently configured: <b>{_cfg["outlook_email"]}</b>'
+                f'&nbsp;&nbsp;·&nbsp;&nbsp;Last updated: {_cfg["updated_at"] or "—"}'
+                f'</div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;'
+                'padding:10px 14px;font-size:12px;color:#92400E;margin-bottom:12px">'
+                'Not configured — email notifications are disabled until you save credentials below.'
+                '</div>',
+                unsafe_allow_html=True)
+        _oc1, _oc2 = st.columns(2)
+        _new_outlook_email = _oc1.text_input(
+            "Outlook / Office 365 Email",
+            value=_cfg["outlook_email"],
+            placeholder="sender@yourcompany.com",
+            key="outlook_email_input")
+        _new_outlook_pwd = _oc2.text_input(
+            "Password / App Password",
+            value=_cfg["outlook_password"],
+            type="password",
+            placeholder="Enter password or App Password",
+            key="outlook_pwd_input",
+            help="If MFA is enabled, generate an App Password in your Microsoft account settings.")
+        _oc3, _oc4 = st.columns([1, 3])
+        if _oc3.button("Save Settings", type="primary", key="save_outlook_cfg"):
+            if not _new_outlook_email.strip() or not _new_outlook_pwd.strip():
+                st.error("Both email and password are required.")
+            else:
+                auth.save_email_settings(_new_outlook_email.strip(), _new_outlook_pwd.strip())
+                st.session_state.toast = {"msg": "Outlook settings saved!", "type": "success"}
+                st.rerun()
+        if _oc4.button("Clear / Disable Email", key="clear_outlook_cfg"):
+            auth.save_email_settings("", "")
+            st.session_state.toast = {"msg": "Email settings cleared.", "type": "info"}
+            st.rerun()
+
     # ── Import users from Excel ───────────────────────────────────────────────
     with st.expander("Import Users from Excel", expanded=False):
         st.markdown(
@@ -2343,6 +2492,58 @@ elif st.session_state.active_tab == "users" and role == "admin":
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: TASKS  (all roles — employees see only their own tasks)
 # ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "manager"):
+    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">Settings</h2>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Configure integrations and notifications</p>', unsafe_allow_html=True)
+
+    with st.expander("Outlook Email Settings", expanded=True):
+        _cfg = auth.get_email_settings()
+        st.markdown(
+            '<p style="color:#64748B;font-size:12px;margin-bottom:10px">'
+            'Configure the Outlook / Office 365 account used to send password reset codes '
+            'and task notifications. Credentials are stored in the local database.</p>',
+            unsafe_allow_html=True)
+        if _cfg["outlook_email"]:
+            st.markdown(
+                f'<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;'
+                f'padding:10px 14px;font-size:12px;color:#16A34A;margin-bottom:12px">'
+                f'Currently configured: <b>{_cfg["outlook_email"]}</b>'
+                f'&nbsp;&nbsp;·&nbsp;&nbsp;Last updated: {_cfg["updated_at"] or "—"}'
+                f'</div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;'
+                'padding:10px 14px;font-size:12px;color:#92400E;margin-bottom:12px">'
+                'Not configured — email notifications are disabled until you save credentials below.'
+                '</div>',
+                unsafe_allow_html=True)
+        _sc1, _sc2 = st.columns(2)
+        _s_email = _sc1.text_input(
+            "Outlook / Office 365 Email",
+            value=_cfg["outlook_email"],
+            placeholder="sender@yourcompany.com",
+            key="settings_outlook_email")
+        _s_pwd = _sc2.text_input(
+            "Password / App Password",
+            value=_cfg["outlook_password"],
+            type="password",
+            placeholder="Enter password or App Password",
+            key="settings_outlook_pwd",
+            help="If MFA is enabled, generate an App Password in your Microsoft account settings.")
+        _sc3, _sc4 = st.columns([1, 3])
+        if _sc3.button("Save Settings", type="primary", key="settings_save_outlook"):
+            if not _s_email.strip() or not _s_pwd.strip():
+                st.error("Both email and password are required.")
+            else:
+                auth.save_email_settings(_s_email.strip(), _s_pwd.strip())
+                st.session_state.toast = {"msg": "Outlook settings saved!", "type": "success"}
+                st.rerun()
+        if _sc4.button("Clear / Disable Email", key="settings_clear_outlook"):
+            auth.save_email_settings("", "")
+            st.session_state.toast = {"msg": "Email settings cleared.", "type": "info"}
+            st.rerun()
+
 elif st.session_state.active_tab == "tasks":
     _STAT_COLORS = {
         "Not Started": "#94A3B8", "In Progress": "#3B82F6",
@@ -2389,6 +2590,11 @@ elif st.session_state.active_tab == "tasks":
                     )
                     if st.button("Save Update", type="primary", key=f"save_p_{_t['id']}", use_container_width=True):
                         auth.update_task_progress(_t["id"], _new_prog, _new_stat, _new_comment)
+                        if _t.get("assigned_by_email"):
+                            email_utils.send_task_updated_email(
+                                _t["assigned_by_email"], _t["assigned_by"],
+                                cu["name"], _t["title"],
+                                _new_stat, _new_prog, _new_comment)
                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
 
@@ -2533,6 +2739,9 @@ elif st.session_state.active_tab == "tasks":
                             _sel_idx = _emp_opts.index(_emp_sel)
                             _sel_emp = _assignable[_sel_idx]
                             auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
+                            email_utils.send_task_assigned_email(
+                                _sel_emp["email"], _sel_emp["name"],
+                                _nt_title, cu["name"], _nt_due.strip())
                             st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
                             st.rerun()
 

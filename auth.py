@@ -79,6 +79,20 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    try:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS email_settings (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                outlook_email TEXT NOT NULL DEFAULT '',
+                outlook_password TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+            INSERT OR IGNORE INTO email_settings (id, outlook_email, outlook_password, updated_at)
+            VALUES (1, '', '', '');
+        """)
+        conn.commit()
+    except Exception:
+        pass
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
         _seed_admin(c)
@@ -123,6 +137,20 @@ def authenticate(email: str, password: str):
     conn.close()
     if row and row[5] == 1 and verify_password(password, row[3]):
         return {"id": row[0], "name": row[1], "email": row[2], "role": row[4]}
+    return None
+
+
+def get_user_by_email(email: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, name, email, role, is_active FROM users WHERE email=?",
+        (email.strip().lower(),),
+    )
+    row = c.fetchone()
+    conn.close()
+    if row and row[4] == 1:
+        return {"id": row[0], "name": row[1], "email": row[2], "role": row[3]}
     return None
 
 
@@ -206,6 +234,45 @@ def reset_password(user_id: int, new_password: str):
     conn.close()
 
 
+# ── EMAIL SETTINGS ─────────────────────────────────────────────────────────────
+
+def _ensure_email_settings(c):
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS email_settings (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            outlook_email TEXT NOT NULL DEFAULT '',
+            outlook_password TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    c.execute("INSERT OR IGNORE INTO email_settings (id, outlook_email, outlook_password, updated_at) VALUES (1,'','','')")
+
+
+def get_email_settings() -> dict:
+    conn = get_conn()
+    c = conn.cursor()
+    _ensure_email_settings(c)
+    conn.commit()
+    c.execute("SELECT outlook_email, outlook_password, updated_at FROM email_settings WHERE id=1")
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {"outlook_email": row[0], "outlook_password": row[1], "updated_at": row[2]}
+    return {"outlook_email": "", "outlook_password": "", "updated_at": ""}
+
+
+def save_email_settings(outlook_email: str, outlook_password: str):
+    conn = get_conn()
+    c = conn.cursor()
+    _ensure_email_settings(c)
+    c.execute(
+        "UPDATE email_settings SET outlook_email=?, outlook_password=?, updated_at=? WHERE id=1",
+        (outlook_email.strip().lower(), outlook_password, _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
 def set_active(user_id: int, active: bool):
     conn = get_conn()
     c = conn.cursor()
@@ -227,7 +294,7 @@ def delete_user(user_id: int):
 _TASK_SQL = """
     SELECT t.id, t.title, t.description, t.status, t.progress,
            t.due_date, t.start_date, t.created_at, t.updated_at, t.comment,
-           u1.name, u1.email, u2.name
+           u1.name, u1.email, u2.name, u2.email
     FROM tasks t
     JOIN users u1 ON t.assigned_to_id = u1.id
     JOIN users u2 ON t.assigned_by_id = u2.id
@@ -239,7 +306,8 @@ def _task(r) -> dict:
         "id": r[0], "title": r[1], "description": r[2],
         "status": r[3], "progress": r[4], "due_date": r[5],
         "start_date": r[6], "created_at": r[7], "updated_at": r[8],
-        "comment": r[9], "assigned_to": r[10], "assigned_to_email": r[11], "assigned_by": r[12],
+        "comment": r[9], "assigned_to": r[10], "assigned_to_email": r[11],
+        "assigned_by": r[12], "assigned_by_email": r[13],
     }
 
 
