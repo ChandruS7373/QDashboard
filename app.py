@@ -2777,15 +2777,10 @@ elif st.session_state.active_tab == "tasks":
                             st.rerun()
 
             _all_tasks = auth.get_all_tasks()
-            _sync_col1, _sync_col2 = st.columns([4, 1])
-            _sync_col1.markdown(
+            st.markdown(
                 f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px">'
                 f'<b>{len(_all_tasks)}</b> total tasks</p>',
                 unsafe_allow_html=True)
-            if _sync_col2.button("Sync to Excel", key="sync_tasks_excel", use_container_width=True):
-                save_to_excel(st.session_state.projects)
-                st.session_state.toast = {"msg": "Tasks synced to Excel!", "type": "success"}
-                st.rerun()
 
             # ── Comment date-range filter ──────────────────────────────────────
             with st.container(border=True):
