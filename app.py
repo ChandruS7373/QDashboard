@@ -6,7 +6,7 @@ import anthropic
 import os
 import html
 import re
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import auth
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
@@ -21,8 +21,9 @@ if "db_initialized" not in st.session_state:
     st.session_state.db_initialized = True
 
 # ── EXCEL PATH ────────────────────────────────────────────────────────────────
-EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects.xlsx")
-EXCEL_COLS = ["id","name","client","lead","employee","status","start","end","po","desc",
+EXCEL_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects.xlsx")
+USERS_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.xlsx")
+EXCEL_COLS = ["id","name","client","lead","employee","status","proj_type","start","end","due_date","po","desc",
               "manual_hrs","auto_hrs","cost_per_hr","hours_saved","cost_saved","roi_pct","is_new","is_active"]
 
 # ── BASE DATA ─────────────────────────────────────────────────────────────────
@@ -100,6 +101,7 @@ Be concise, data-driven, use bullet points. Show ROI formula steps when calculat
 
 # ── EXCEL HELPERS ─────────────────────────────────────────────────────────────
 def save_to_excel(df: pd.DataFrame):
+    import tempfile, shutil
     out = df.copy()
     for col in EXCEL_COLS:
         if col not in out.columns:
@@ -113,24 +115,89 @@ def save_to_excel(df: pd.DataFrame):
     user_records = auth.get_all_users()
     user_df = pd.DataFrame(user_records, columns=["id","name","email","role","is_active","created_at"]) \
               if user_records else pd.DataFrame(columns=["id","name","email","role","is_active","created_at"])
-    with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl") as writer:
-        out[EXCEL_COLS].to_excel(writer, sheet_name="Project Details", index=False)
-        presales_df.to_excel(writer, sheet_name="Presales_POC", index=False)
-        license_df.to_excel(writer, sheet_name="License", index=False)
-        user_df.to_excel(writer, sheet_name="Users", index=False)
+    sold_records = auth.get_all_sold_licenses()
+    sold_df = pd.DataFrame(sold_records) if sold_records else pd.DataFrame(
+        columns=["id","tool_name","client","no_of_licenses","start_date","end_date","notes","created_at"]
+    )
+    # Write to a temp file first, then replace — avoids PermissionError when Excel has the file open
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", dir=os.path.dirname(EXCEL_PATH))
+    os.close(tmp_fd)
+    try:
+        with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
+            out[EXCEL_COLS].to_excel(writer, sheet_name="Project Details", index=False)
+            presales_df.to_excel(writer, sheet_name="Presales_POC", index=False)
+            license_df.to_excel(writer, sheet_name="License", index=False)
+            sold_df.to_excel(writer, sheet_name="Sold_License", index=False)
+            user_df.to_excel(writer, sheet_name="Users", index=False)
+        shutil.move(tmp_path, EXCEL_PATH)
+    except PermissionError:
+        # projects.xlsx is open in Excel — keep temp file as fallback and surface a clear warning
+        st.warning(
+            "⚠️ **Could not save to projects.xlsx** — the file is open in Excel. "
+            "Please close Excel and click **Sync** to reload, or your changes are held in memory only.",
+            icon=None,
+        )
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 def load_from_excel() -> pd.DataFrame:
     if os.path.exists(EXCEL_PATH):
         try:
             return pd.read_excel(EXCEL_PATH, sheet_name="Project Details", dtype=str, engine="openpyxl").fillna("")
         except Exception:
-            return pd.read_excel(EXCEL_PATH, dtype=str, engine="openpyxl").fillna("")
+            try:
+                return pd.read_excel(EXCEL_PATH, dtype=str, engine="openpyxl").fillna("")
+            except Exception:
+                # File is corrupted — back it up and rebuild from BASE_PROJECTS
+                import shutil
+                try:
+                    shutil.move(EXCEL_PATH, EXCEL_PATH + ".corrupted.bak")
+                except Exception:
+                    os.remove(EXCEL_PATH)
     df = pd.DataFrame(BASE_PROJECTS)
     save_to_excel(df)
     return df
 
 def excel_mtime() -> float:
     return os.path.getmtime(EXCEL_PATH) if os.path.exists(EXCEL_PATH) else 0.0
+
+
+# ── USERS EXCEL HELPERS ───────────────────────────────────────────────────────
+def _load_users_excel_passwords() -> dict:
+    """Return {email_lower: plain_password} from users.xlsx if the file exists."""
+    if not os.path.exists(USERS_EXCEL_PATH):
+        return {}
+    try:
+        df = pd.read_excel(USERS_EXCEL_PATH, dtype=str, engine="openpyxl").fillna("")
+        if "Email" in df.columns and "Password" in df.columns:
+            return {str(r["Email"]).strip().lower(): str(r["Password"])
+                    for _, r in df.iterrows() if str(r["Email"]).strip()}
+    except Exception:
+        pass
+    return {}
+
+
+def sync_users_excel(password_updates: dict = None):
+    """Write users.xlsx (Name, Email, Role, Password, Active).
+    password_updates = {email: plain_text_password} for newly set passwords."""
+    users = auth.get_all_users()
+    existing_pw = _load_users_excel_passwords()
+    if password_updates:
+        existing_pw.update({k.strip().lower(): v for k, v in password_updates.items()})
+    rows = [
+        {
+            "Name": u["name"],
+            "Email": u["email"],
+            "Role": u["role"],
+            "Password": existing_pw.get(u["email"].strip().lower(), ""),
+            "Active": "Yes" if u["is_active"] else "No",
+        }
+        for u in users
+    ]
+    pd.DataFrame(rows).to_excel(USERS_EXCEL_PATH, index=False, engine="openpyxl")
+
 
 def compute_roi(manual, auto, cost):
     try:
@@ -154,6 +221,28 @@ def is_new(row) -> bool:
 
 # ── HTML HELPERS ──────────────────────────────────────────────────────────────
 esc = html.escape   # shorthand — always escape user-sourced values before HTML injection
+
+def _parse_dmy(s: str):
+    try: return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
+    except: return None
+
+def _parse_ymd(s: str):
+    try: return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
+    except: return None
+
+def _due_cell(due_str: str) -> str:
+    v = str(due_str).strip()
+    if not v:
+        return '<span style="font-size:10px;color:#CBD5E1">—</span>'
+    d = _parse_dmy(v)
+    if not d:
+        return f'<span style="font-size:11px;color:#64748B">{esc(v)}</span>'
+    diff = (d - date.today()).days
+    if diff < 0:
+        return f'<span style="font-size:10px;font-weight:700;background:#FEF2F2;color:#991B1B;padding:2px 5px;border-radius:4px">{esc(v)}</span>'
+    if diff <= 7:
+        return f'<span style="font-size:10px;font-weight:700;background:#FFFBEB;color:#92400E;padding:2px 5px;border-radius:4px">{esc(v)}</span>'
+    return f'<span style="font-size:11px;color:#64748B">{esc(v)}</span>'
 
 def badge_html(status: str) -> str:
     s = STATUS_STYLES.get(status, {"bg":"#F1F5F9","text":"#475569","dot":"#94A3B8"})
@@ -203,6 +292,10 @@ if "projects" not in st.session_state:
     st.session_state.projects = load_from_excel()
 if "is_active" not in st.session_state.projects.columns:
     st.session_state.projects["is_active"] = True
+if "proj_type" not in st.session_state.projects.columns:
+    st.session_state.projects["proj_type"] = ""
+if "due_date" not in st.session_state.projects.columns:
+    st.session_state.projects["due_date"] = ""
 if "excel_mtime" not in st.session_state:
     st.session_state.excel_mtime = excel_mtime()
 if "messages" not in st.session_state:
@@ -224,11 +317,14 @@ if "show_notif_detail"    not in st.session_state: st.session_state.show_notif_d
 if "project_filter_preset"  not in st.session_state: st.session_state.project_filter_preset  = "All"
 if "presales_filter_preset" not in st.session_state: st.session_state.presales_filter_preset = "All"
 if "lc_edit_id"            not in st.session_state: st.session_state.lc_edit_id            = None
+if "sl_edit_id"            not in st.session_state: st.session_state.sl_edit_id            = None
 if "dash_client_filter"    not in st.session_state: st.session_state.dash_client_filter    = "All"
 if "dash_slicers_expanded" not in st.session_state: st.session_state.dash_slicers_expanded = False
 if "current_user"         not in st.session_state: st.session_state.current_user         = None
 if "reset_pwd_uid"        not in st.session_state: st.session_state.reset_pwd_uid        = None
 if "user_edit_id"         not in st.session_state: st.session_state.user_edit_id         = None
+if "task_comment_view" not in st.session_state: st.session_state.task_comment_view = None
+if "poc_row_edit"     not in st.session_state: st.session_state.poc_row_edit     = None
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def get_stats(d):
@@ -343,6 +439,29 @@ div[data-testid="stButton"] > button{
 div[data-testid="stVerticalBlockBorderWrapper"]{
   border-color:#E2E8F0!important;border-radius:12px!important}
 
+/* ── Table action icon buttons (✏ edit · 🗑 delete · 🔑 warn) ── */
+div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button{
+  background:#EFF6FF!important;border:1.5px solid #BFDBFE!important;
+  color:#1D4ED8!important;font-size:15px!important;
+  min-height:30px!important;padding:2px 8px!important;
+  transition:background .15s,border-color .15s!important}
+div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button:hover{
+  background:#DBEAFE!important;border-color:#93C5FD!important}
+div[data-testid="stMarkdownContainer"]:has(.act-del-marker) ~ div[data-testid="stButton"] > button{
+  background:#FFF1F2!important;border:1.5px solid #FECACA!important;
+  color:#DC2626!important;font-size:15px!important;
+  min-height:30px!important;padding:2px 8px!important;
+  transition:background .15s,border-color .15s!important}
+div[data-testid="stMarkdownContainer"]:has(.act-del-marker) ~ div[data-testid="stButton"] > button:hover{
+  background:#FEE2E2!important;border-color:#FCA5A5!important}
+div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="stButton"] > button{
+  background:#FFFBEB!important;border:1.5px solid #FDE68A!important;
+  color:#92400E!important;font-size:15px!important;
+  min-height:30px!important;padding:2px 8px!important;
+  transition:background .15s,border-color .15s!important}
+div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="stButton"] > button:hover{
+  background:#FEF3C7!important;border-color:#FCD34D!important}
+
 /* ── Login ── */
 .login-hint{text-align:center;font-size:11px;color:#94A3B8;margin-top:12px}
 
@@ -407,7 +526,7 @@ def _render_login():
                         st.rerun()
                     else:
                         st.error("Invalid credentials or account is inactive.")
-            st.markdown('<div class="login-hint"></div>',
+            st.markdown('<div class="login-hint">Default admin: admin@qualesce.com / Admin@123</div>',
                         unsafe_allow_html=True)
 
 if st.session_state.current_user is None:
@@ -521,7 +640,7 @@ _HDR_STYLE = 'font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3
 # ══════════════════════════════════════════════════════════════════════════════
 # MODAL: ADD / EDIT
 # ══════════════════════════════════════════════════════════════════════════════
-if st.session_state.show_modal is not None and role == "admin":
+if st.session_state.show_modal is not None and role in ("admin", "lead", "manager"):
     mode     = "add" if st.session_state.show_modal == "add" else "edit"
     edit_row = {} if mode == "add" else st.session_state.show_modal.get("edit", {})
 
@@ -587,6 +706,12 @@ if st.session_state.show_modal is not None and role == "admin":
         idx    = ALL_STATUSES.index(edit_row["status"]) if edit_row.get("status") in ALL_STATUSES else 0
         status = c2.selectbox("Status", ALL_STATUSES, index=idx)
 
+        _PROJ_TYPES = ["", "RPA", "AI Agent", "Presales"]
+        _pt_val = edit_row.get("proj_type", "")
+        _pt_idx = _PROJ_TYPES.index(_pt_val) if _pt_val in _PROJ_TYPES else 0
+        proj_type = c1.selectbox("Type", _PROJ_TYPES, index=_pt_idx,
+                                 format_func=lambda x: "— Select type —" if x == "" else x)
+
         # Employees: multi-select — one or more team members assigned to the project
         current_emp_raw  = str(edit_row.get("employee",""))
         current_emp_list = [n.strip() for n in current_emp_raw.replace("&", ",").split(",") if n.strip()]
@@ -607,8 +732,26 @@ if st.session_state.show_modal is not None and role == "admin":
         else:
             emp = ", ".join(selected_emps)
 
-        start  = c1.text_input("Start (DD/MM/YYYY)", value=edit_row.get("start",""))
-        end    = c2.text_input("End (DD/MM/YYYY)",   value=edit_row.get("end",""))
+        _dc1, _dc2, _dc3 = st.columns(3)
+        _s_default = _parse_dmy(edit_row.get("start", ""))
+        _start_dt = _dc1.date_input("Start Date", value=_s_default, key="modal_start", format="DD/MM/YYYY")
+        start = _start_dt.strftime("%d/%m/%Y") if _start_dt else ""
+
+        _e_raw = edit_row.get("end", "").strip()
+        _is_ongoing = not bool(_e_raw)
+        _ongoing = _dc2.checkbox("Ongoing (no end date)", value=_is_ongoing, key="modal_ongoing")
+        if _ongoing:
+            end = ""
+        else:
+            _e_default = _parse_dmy(_e_raw) or date.today()
+            _end_dt = _dc2.date_input("End Date", value=_e_default, key="modal_end", format="DD/MM/YYYY")
+            end = _end_dt.strftime("%d/%m/%Y") if _end_dt else ""
+
+        _d_raw = edit_row.get("due_date", "").strip()
+        _due_dt_default = _parse_dmy(_d_raw) if _d_raw else None
+        _due_dt = _dc3.date_input("Due Date (optional)", value=_due_dt_default, key="modal_due", format="DD/MM/YYYY")
+        due_date = _due_dt.strftime("%d/%m/%Y") if _due_dt else ""
+
         po     = c1.text_input("PO Number",           value=edit_row.get("po",""))
         desc   = c2.text_input("Description",         value=edit_row.get("desc",""))
         _is_active_raw = str(edit_row.get("is_active", "True")).strip().lower()
@@ -632,16 +775,11 @@ if st.session_state.show_modal is not None and role == "admin":
             st.session_state.show_modal = None
             st.rerun()
 
-        _DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
         if save_clicked:
             errors = []
             if not name or len(name.strip()) < 3:  errors.append("Project name must be at least 3 characters.")
             if not client.strip():                  errors.append("Client is required.")
             if not emp.strip():                     errors.append("Employee is required.")
-            if start.strip() and not _DATE_RE.match(start.strip()):
-                errors.append("Start date must be in DD/MM/YYYY format.")
-            if end.strip() and not _DATE_RE.match(end.strip()):
-                errors.append("End date must be in DD/MM/YYYY format.")
             if errors:
                 for e in errors: st.error(e)
             else:
@@ -650,7 +788,8 @@ if st.session_state.show_modal is not None and role == "admin":
                         "id": st.session_state.next_id,
                         "name": name.strip(), "client": client.strip(),
                         "lead": lead.strip(), "employee": emp.strip(),
-                        "status": status, "start": start, "end": end, "po": po, "desc": desc.strip(),
+                        "status": status, "proj_type": proj_type,
+                        "start": start, "end": end, "due_date": due_date, "po": po, "desc": desc.strip(),
                         "manual_hrs": manual_hrs, "auto_hrs": auto_hrs, "cost_per_hr": cost_per_hr,
                         "hours_saved": str(roi["saved"]) if roi else "",
                         "cost_saved":  str(roi["cost"])  if roi else "",
@@ -672,7 +811,8 @@ if st.session_state.show_modal is not None and role == "admin":
                         if str(r.get("id","")) == eid:
                             r.update({"name":name.strip(),"client":client.strip(),
                                       "lead":lead.strip(),"employee":emp.strip(),
-                                      "status":status,"start":start,"end":end,"po":po,"desc":desc.strip(),
+                                      "status":status,"proj_type":proj_type,
+                                      "start":start,"end":end,"due_date":due_date,"po":po,"desc":desc.strip(),
                                       "manual_hrs":manual_hrs,"auto_hrs":auto_hrs,"cost_per_hr":cost_per_hr,
                                       "hours_saved":str(roi["saved"]) if roi else r.get("hours_saved",""),
                                       "cost_saved": str(roi["cost"])  if roi else r.get("cost_saved",""),
@@ -1129,6 +1269,7 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                     _lead      = esc(str(row.get("lead","")).strip())
                     _start     = esc(str(row.get("start","")))
                     _end       = esc(str(row.get("end","")) or "Ongoing")
+                    _due_raw   = str(row.get("due_date","")).strip()
                     _po        = esc(str(row.get("po","")))
                     _desc      = esc(str(row.get("desc","")))
 
@@ -1138,6 +1279,10 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                     meta_spans.append(f'<span>{esc(str(row.get("employee","")))} </span>')
                     if _start:
                         meta_spans.append(f'<span>{_start} to {_end}</span>')
+                    if _due_raw:
+                        _due_d = _parse_dmy(_due_raw)
+                        _due_color = "#DC2626" if (_due_d and (_due_d - date.today()).days < 0) else "#92400E" if (_due_d and (_due_d - date.today()).days <= 7) else "#64748B"
+                        meta_spans.append(f'<span>Due: <b style="color:{_due_color}">{esc(_due_raw)}</b></span>')
                     if _po:
                         meta_spans.append(f'<span>PO #{_po}</span>')
                     meta_html = "".join(meta_spans)
@@ -1242,27 +1387,39 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             st.info("No projects match the current filters.")
             return
 
-        is_admin = (role == "admin")
-        col_widths = [10, 0.55, 0.55] if is_admin else [10]
+        is_admin   = (role == "admin")
+        can_edit   = role in ("admin", "lead", "manager")
+        col_widths = [10, 0.4, 0.4] if is_admin else ([10, 0.4] if can_edit else [10])
+
+        # Helper: type badge
+        def _type_badge(pt):
+            if pt == "RPA":
+                return '<span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 6px;border-radius:4px;margin-left:4px">RPA</span>'
+            if pt == "AI Agent":
+                return '<span style="font-size:9px;font-weight:700;background:#F3E8FF;color:#7C3AED;padding:1px 6px;border-radius:4px;margin-left:4px">AI</span>'
+            return ""
 
         # Header row
         hcols = st.columns(col_widths)
         hcols[0].markdown(
             f'<div style="display:flex;gap:0;align-items:center">'
-            f'<div style="width:4%;{_HDR_STYLE}">ID</div>'
-            f'<div style="width:24%;{_HDR_STYLE}">Project Name</div>'
-            f'<div style="width:13%;{_HDR_STYLE}">Client</div>'
-            f'<div style="width:11%;{_HDR_STYLE}">Lead</div>'
-            f'<div style="width:19%;{_HDR_STYLE}">Employee</div>'
-            f'<div style="width:9%;{_HDR_STYLE}">Start</div>'
-            f'<div style="width:9%;{_HDR_STYLE}">End</div>'
+            f'<div style="width:3%;{_HDR_STYLE}">ID</div>'
+            f'<div style="width:19%;{_HDR_STYLE}">Project Name</div>'
+            f'<div style="width:11%;{_HDR_STYLE}">Client</div>'
+            f'<div style="width:9%;{_HDR_STYLE}">Lead</div>'
+            f'<div style="width:14%;{_HDR_STYLE}">Employee</div>'
+            f'<div style="width:6%;{_HDR_STYLE}">Type</div>'
+            f'<div style="width:7%;{_HDR_STYLE}">Start</div>'
+            f'<div style="width:7%;{_HDR_STYLE}">End</div>'
+            f'<div style="width:8%;{_HDR_STYLE}">Due Date</div>'
             f'<div style="width:6%;{_HDR_STYLE}">PO</div>'
             f'<div style="width:5%;{_HDR_STYLE}">Active</div>'
             f'</div>',
             unsafe_allow_html=True
         )
-        if is_admin:
+        if can_edit:
             hcols[1].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
+        if is_admin:
             hcols[2].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
 
         # Data rows — one st.columns per row, all text in one markdown
@@ -1270,6 +1427,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             row_status = str(row.get("status",""))
             bg = next((_ROW_BG[s] for s in _ROW_BG if s in row_status), "#FFFFFF")
             new_tag = ' <span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 5px;border-radius:4px">NEW</span>' if is_new(row) else ""
+            type_badge = _type_badge(str(row.get("proj_type","")).strip())
             lead_val = str(row.get("lead","")).strip()
             lead_html = (f'<span style="font-size:11px;font-weight:600;color:#2563EB">{esc(lead_val)}</span>'
                          if lead_val else '<span style="font-size:11px;color:#CBD5E1">—</span>')
@@ -1282,26 +1440,33 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             rcols = st.columns(col_widths)
             rcols[0].markdown(
                 f'<div style="display:flex;gap:0;align-items:center;background:{bg};padding:7px 0;border-bottom:1px solid #F1F5F9">'
-                f'<div style="width:4%;font-size:10px;color:#94A3B8">{esc(str(row.get("id","")))}</div>'
-                f'<div style="width:24%;font-size:12px;font-weight:600;color:#111827">{esc(str(row.get("name","")))}{new_tag}</div>'
-                f'<div style="width:13%;font-size:12px;color:#374151">{esc(str(row.get("client","")))}</div>'
-                f'<div style="width:11%">{lead_html}</div>'
-                f'<div style="width:19%;font-size:11px;color:#374151">{esc(str(row.get("employee","")))}</div>'
-                f'<div style="width:9%;font-size:11px;color:#64748B">{esc(str(row.get("start","")))}</div>'
-                f'<div style="width:9%;font-size:11px;color:#64748B">{esc(str(row.get("end","")))}</div>'
+                f'<div style="width:3%;font-size:10px;color:#94A3B8">{esc(str(row.get("id","")))}</div>'
+                f'<div style="width:19%;font-size:12px;font-weight:600;color:#111827">{esc(str(row.get("name","")))}{new_tag}{type_badge}</div>'
+                f'<div style="width:11%;font-size:12px;color:#374151">{esc(str(row.get("client","")))}</div>'
+                f'<div style="width:9%">{lead_html}</div>'
+                f'<div style="width:14%;font-size:11px;color:#374151">{esc(str(row.get("employee","")))}</div>'
+                f'<div style="width:6%">{_type_badge(str(row.get("proj_type","")).strip()) or cell("—","10px","#CBD5E1")}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(row.get("start","")))}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(row.get("end","")))}</div>'
+                f'<div style="width:8%">{_due_cell(str(row.get("due_date","")))}</div>'
                 f'<div style="width:6%;font-size:11px;color:#94A3B8">{esc(str(row.get("po","")))}</div>'
                 f'<div style="width:5%">{active_html}</div>'
                 f'</div>',
                 unsafe_allow_html=True
             )
+            rid = str(row.get("id",""))
+            if can_edit:
+                with rcols[1]:
+                    st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                    if st.button("✏", key=f"edit_{tab_key}_{rid}", help="Edit project", use_container_width=True):
+                        st.session_state.show_modal = {"edit": row.to_dict()}
+                        st.rerun()
             if is_admin:
-                rid = str(row.get("id",""))
-                if rcols[1].button("Edit", key=f"edit_{tab_key}_{rid}", help="Edit"):
-                    st.session_state.show_modal = {"edit": row.to_dict()}
-                    st.rerun()
-                if rcols[2].button("Del", key=f"del_{tab_key}_{rid}", help="Delete"):
-                    st.session_state.confirm_delete = {"id": rid, "name": str(row.get("name",""))}
-                    st.rerun()
+                with rcols[2]:
+                    st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                    if st.button("🗑", key=f"del_{tab_key}_{rid}", help="Delete project", use_container_width=True):
+                        st.session_state.confirm_delete = {"id": rid, "name": str(row.get("name",""))}
+                        st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
         csv = filtered.to_csv(index=False)
@@ -1345,55 +1510,8 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
     st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">Presales / POC</h2>', unsafe_allow_html=True)
     st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Presales pipeline and proof-of-concept projects</p>', unsafe_allow_html=True)
 
-    # Status options: default group + individual statuses
-    _PS_STATUS_OPTS = [
-        "Presales/POC (All)", "Presales", "Internal POC", "External POC",
-        "Completed", "In Progress", "Discontinued",
-    ]
     _POC_DEFAULT = {"Presales", "Internal POC", "External POC"}
-
-    f1, f2, f3, f4 = st.columns([2.2, 1.8, 1.5, 1.5])
-    ps_search_q     = f1.text_input("Search", placeholder="Project, employee, lead, client…",
-                                    label_visibility="collapsed", key="ps_search")
-    ps_status_filter = f2.selectbox("Status", _PS_STATUS_OPTS,
-                                    label_visibility="collapsed", key="ps_status")
-
-    # Build base from status filter selection
-    if ps_status_filter == "Presales/POC (All)":
-        ps_base = df[df["status"].isin(_POC_DEFAULT)].copy()
-    else:
-        ps_base = df[df["status"] == ps_status_filter].copy()
-
-    ps_client_opts   = sorted(ps_base["client"].dropna().unique().tolist())
-    ps_client_filter = f3.selectbox("Client", ["All"] + ps_client_opts,
-                                    label_visibility="collapsed", key="ps_client")
-    ps_all_leads = sorted(set(
-        str(l).strip() for l in ps_base["lead"].dropna() if str(l).strip()
-    )) if "lead" in ps_base.columns else []
-    ps_lead_filter = f4.selectbox("Lead", ["All"] + ps_all_leads,
-                                  label_visibility="collapsed", key="ps_lead")
-
-    ps_filtered = ps_base.copy()
-    if ps_search_q:
-        _q = ps_search_q.lower()
-        _sc = [c for c in ["name","employee","lead","client","desc"] if c in ps_filtered.columns]
-        _mask = (ps_filtered[_sc].fillna("").astype(str)
-                 .apply(lambda col: col.str.lower().str.contains(_q, regex=False))
-                 .any(axis=1))
-        ps_filtered = ps_filtered[_mask]
-    if ps_client_filter != "All":
-        ps_filtered = ps_filtered[ps_filtered["client"] == ps_client_filter]
-    if ps_lead_filter != "All" and "lead" in ps_filtered.columns:
-        ps_filtered = ps_filtered[ps_filtered["lead"].str.contains(ps_lead_filter, na=False)]
-
-    st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(ps_filtered)}</b> of <b>{len(ps_base)}</b> <b>{ps_status_filter}</b> projects</p>',
-                unsafe_allow_html=True)
-
-    ps_hdr = st.columns([0.4, 2.8, 1.8, 1.6, 1.8, 1.4, 1.0, 1.0, 0.8, 0.4, 0.4])
-    for _col, _lbl in zip(ps_hdr, ["ID","Project Name","Client","Lead","Employee","Status","Start","End","PO","",""]):
-        _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;'
-                      f'letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>',
-                      unsafe_allow_html=True)
+    _POC_CLIENTS = {"Internal POC", "External POC"}
 
     PS_ROW_BG = {
         "Important":    "#FFF1F2",
@@ -1405,66 +1523,236 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
         "Discontinued": "#FEF2F2",
     }
 
-    # Presales table header
-    _ps_is_admin = (role == "admin")
-    _ps_col_w    = [10, 0.55, 0.55] if _ps_is_admin else [10]
-    _ps_hcols    = st.columns(_ps_col_w)
-    _ps_hcols[0].markdown(
-        f'<div style="display:flex;gap:0;align-items:center">'
-        f'<div style="width:4%;{_HDR_STYLE}">ID</div>'
-        f'<div style="width:24%;{_HDR_STYLE}">Project Name</div>'
-        f'<div style="width:13%;{_HDR_STYLE}">Client</div>'
-        f'<div style="width:11%;{_HDR_STYLE}">Lead</div>'
-        f'<div style="width:17%;{_HDR_STYLE}">Employee</div>'
-        f'<div style="width:13%;{_HDR_STYLE}">Status</div>'
-        f'<div style="width:9%;{_HDR_STYLE}">Start</div>'
-        f'<div style="width:9%;{_HDR_STYLE}">End</div>'
-        f'</div>',
-        unsafe_allow_html=True
-    )
+    def _ps_type_badge(pt):
+        if pt == "RPA":
+            return '<span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 6px;border-radius:4px">RPA</span>'
+        if pt == "AI Agent":
+            return '<span style="font-size:9px;font-weight:700;background:#F3E8FF;color:#7C3AED;padding:1px 6px;border-radius:4px">AI</span>'
+        if pt == "Presales":
+            return '<span style="font-size:9px;font-weight:700;background:#FEF9C3;color:#854D0E;padding:1px 6px;border-radius:4px">Pre</span>'
+        return '<span style="font-size:10px;color:#CBD5E1">—</span>'
 
-    # Presales data rows — one st.columns per row
-    for _, _row in ps_filtered.iterrows():
-        _rstat = str(_row.get("status",""))
-        _bg    = next((PS_ROW_BG[s] for s in PS_ROW_BG if s in _rstat), "#FFFFFF")
-        _new_tag = ' <span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 5px;border-radius:4px">NEW</span>' if is_new(_row) else ""
-        _lv = str(_row.get("lead","")).strip()
-        _lead_html = (f'<span style="font-size:11px;font-weight:600;color:#2563EB">{esc(_lv)}</span>' if _lv else '<span style="font-size:11px;color:#CBD5E1">—</span>')
-        _rcols = st.columns(_ps_col_w)
-        _rcols[0].markdown(
-            f'<div style="display:flex;gap:0;align-items:center;background:{_bg};padding:7px 0;border-bottom:1px solid #F1F5F9">'
-            f'<div style="width:4%;font-size:10px;color:#94A3B8">{esc(str(_row.get("id","")))}</div>'
-            f'<div style="width:24%;font-size:12px;font-weight:600;color:#111827">{esc(str(_row.get("name","")))}{_new_tag}</div>'
-            f'<div style="width:13%;font-size:12px;color:#374151">{esc(str(_row.get("client","")))}</div>'
-            f'<div style="width:11%">{_lead_html}</div>'
-            f'<div style="width:17%;font-size:11px;color:#374151">{esc(str(_row.get("employee","")))}</div>'
-            f'<div style="width:13%">{badge_html(str(_row.get("status","")))}</div>'
-            f'<div style="width:9%;font-size:11px;color:#64748B">{esc(str(_row.get("start","")))}</div>'
-            f'<div style="width:9%;font-size:11px;color:#64748B">{esc(str(_row.get("end","")))}</div>'
+    def _render_poc_table(data, tab_key):
+        _is_adm = (role == "admin")
+        _can_ed = role in ("admin", "lead", "manager")
+        _cw = [10, 0.4, 0.4] if _is_adm else ([10, 0.4] if _can_ed else [10])
+        if data.empty:
+            st.info("No projects found.")
+            return
+        st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(data)}</b> project(s)</p>',
+                    unsafe_allow_html=True)
+        _hc = st.columns(_cw)
+        _hc[0].markdown(
+            f'<div style="display:flex;gap:0;align-items:center">'
+            f'<div style="width:3%;{_HDR_STYLE}">ID</div>'
+            f'<div style="width:17%;{_HDR_STYLE}">Project Name</div>'
+            f'<div style="width:10%;{_HDR_STYLE}">Client</div>'
+            f'<div style="width:9%;{_HDR_STYLE}">Lead</div>'
+            f'<div style="width:12%;{_HDR_STYLE}">Employee</div>'
+            f'<div style="width:6%;{_HDR_STYLE}">Type</div>'
+            f'<div style="width:10%;{_HDR_STYLE}">Status</div>'
+            f'<div style="width:7%;{_HDR_STYLE}">Start</div>'
+            f'<div style="width:7%;{_HDR_STYLE}">End</div>'
+            f'<div style="width:8%;{_HDR_STYLE}">Due Date</div>'
+            f'<div style="width:11%;{_HDR_STYLE}">Notes</div>'
             f'</div>',
             unsafe_allow_html=True
         )
-        if _ps_is_admin:
+        if _can_ed: _hc[1].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
+        if _is_adm: _hc[2].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
+        for _, _row in data.iterrows():
+            _rstat = str(_row.get("status",""))
+            _bg = next((PS_ROW_BG[s] for s in PS_ROW_BG if s in _rstat), "#FFFFFF")
+            _new_tag = (' <span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;'
+                        'padding:1px 5px;border-radius:4px">NEW</span>') if is_new(_row) else ""
+            _lv = str(_row.get("lead","")).strip()
+            _lead_html = (f'<span style="font-size:11px;font-weight:600;color:#2563EB">{esc(_lv)}</span>'
+                          if _lv else '<span style="font-size:11px;color:#CBD5E1">—</span>')
             _rid = str(_row.get("id",""))
-            if _rcols[1].button("Edit", key=f"ps_edit_{_rid}", help="Edit"):
-                st.session_state.show_modal = {"edit": _row.to_dict()}
-                st.rerun()
-            if _rcols[2].button("Del", key=f"ps_del_{_rid}", help="Delete"):
-                st.session_state.confirm_delete = {"id": _rid, "name": str(_row.get("name",""))}
-                st.rerun()
+            _inline_active = (st.session_state.poc_row_edit == _rid)
+            _notes_val = str(_row.get("desc","")).strip()
+            _notes_disp = (f'<span style="font-size:11px;color:#374151">{esc(_notes_val)}</span>'
+                           if _notes_val else '<span style="font-size:11px;color:#CBD5E1">—</span>')
+            _rc = st.columns(_cw)
+            _rc[0].markdown(
+                f'<div style="display:flex;gap:0;align-items:center;background:{_bg};padding:7px 0;border-bottom:1px solid #F1F5F9">'
+                f'<div style="width:3%;font-size:10px;color:#94A3B8">{esc(str(_row.get("id","")))}</div>'
+                f'<div style="width:17%;font-size:12px;font-weight:600;color:#111827">{esc(str(_row.get("name","")))}{_new_tag}</div>'
+                f'<div style="width:10%;font-size:12px;color:#374151">{esc(str(_row.get("client","")))}</div>'
+                f'<div style="width:9%">{_lead_html}</div>'
+                f'<div style="width:12%;font-size:11px;color:#374151">{esc(str(_row.get("employee","")))}</div>'
+                f'<div style="width:6%">{_ps_type_badge(str(_row.get("proj_type","")).strip())}</div>'
+                f'<div style="width:10%">{badge_html(str(_row.get("status","")))}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(_row.get("start","")))}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(_row.get("end","")))}</div>'
+                f'<div style="width:8%">{_due_cell(str(_row.get("due_date","")))}</div>'
+                f'<div style="width:11%">{_notes_disp}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            if _can_ed:
+                with _rc[1]:
+                    if not _inline_active:
+                        st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                    if st.button("✕" if _inline_active else "✏", key=f"{tab_key}_edit_{_rid}",
+                                 help="Cancel" if _inline_active else "Edit notes",
+                                 use_container_width=True):
+                        if _inline_active:
+                            st.session_state.poc_row_edit = None
+                        else:
+                            st.session_state.poc_row_edit = _rid
+                        st.rerun()
+            if _is_adm:
+                with _rc[2]:
+                    st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                    if st.button("🗑", key=f"{tab_key}_del_{_rid}", help="Delete", use_container_width=True):
+                        st.session_state.confirm_delete = {"id": _rid, "name": str(_row.get("name",""))}
+                        st.rerun()
+            if _inline_active and _can_ed:
+                with st.container():
+                    _ic1, _ic2 = st.columns([3, 1])
+                    _new_comment = _ic1.text_area(
+                        "Notes / Comment", value=_notes_val,
+                        key=f"{tab_key}_inline_comment_{_rid}", height=72,
+                        label_visibility="collapsed", placeholder="Add notes or comment…"
+                    )
+                    _b1, _b2, _b3 = _ic2.columns(3)
+                    if _b1.button("💾", key=f"{tab_key}_save_cmt_{_rid}", help="Save comment"):
+                        _proj_idx = st.session_state.projects.index[
+                            st.session_state.projects["id"].astype(str) == _rid
+                        ]
+                        if len(_proj_idx) > 0:
+                            st.session_state.projects.at[_proj_idx[0], "desc"] = _new_comment.strip()
+                            save_to_excel(st.session_state.projects)
+                            st.session_state.excel_mtime = excel_mtime()
+                        st.session_state.poc_row_edit = None
+                        st.session_state.toast = {"msg": "Comment saved!", "type": "success"}
+                        st.rerun()
+                    if _b2.button("✏️", key=f"{tab_key}_full_edit_{_rid}", help="Full edit"):
+                        st.session_state.poc_row_edit = None
+                        st.session_state.show_modal = {"edit": _row.to_dict()}
+                        st.rerun()
+                    if _b3.button("✕", key=f"{tab_key}_cancel_cmt_{_rid}", help="Cancel"):
+                        st.session_state.poc_row_edit = None
+                        st.rerun()
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.download_button("Export CSV", data.to_csv(index=False),
+                           file_name=f"qualesce_{tab_key}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                           mime="text/csv", key=f"csv_{tab_key}")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    ps_csv = ps_filtered.to_csv(index=False)
-    st.download_button("Export CSV", ps_csv,
-                       file_name=f"qualesce_presales_poc_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                       mime="text/csv")
+    # ── Create New form (admin / lead / manager only) ─────────────────────────
+    if role in ("admin", "lead", "manager"):
+        with st.expander("+ Create New Presales / POC Entry", expanded=False):
+            with st.container():
+                _pc1, _pc2 = st.columns(2)
+                _ps_new_name   = _pc1.text_input("Project Name *", key="ps_new_name")
+                _ps_new_client = _pc2.text_input("Client Name *",  key="ps_new_client")
+
+                _pc3, _pc4 = st.columns(2)
+                _ps_all_emp = sorted(set(
+                    n.strip()
+                    for raw in df.get("employee", pd.Series(dtype=str)).dropna()
+                    for n in str(raw).replace("&", ",").split(",")
+                    if n.strip()
+                ))
+                _ps_all_leads = sorted(set(
+                    str(l).strip() for l in df.get("lead", pd.Series(dtype=str)).dropna() if str(l).strip()
+                )) if "lead" in df.columns else []
+
+                _ps_new_lead = _pc3.selectbox(
+                    "Lead", [""] + _ps_all_leads + ["── Type new ──"],
+                    key="ps_new_lead"
+                )
+                if _ps_new_lead == "── Type new ──":
+                    _ps_new_lead = _pc3.text_input("Enter lead name", key="ps_new_lead_txt")
+
+                _ps_new_emp_sel = _pc4.multiselect(
+                    "Employee(s)", options=_ps_all_emp, key="ps_new_emp_sel"
+                )
+                _ps_new_emp_txt = _pc4.text_input(
+                    "Add new employee (optional)", key="ps_new_emp_txt",
+                    placeholder="leave blank if not needed"
+                )
+                _ps_new_emp = ", ".join(_ps_new_emp_sel + ([_ps_new_emp_txt.strip()] if _ps_new_emp_txt.strip() else []))
+
+                _pc5, _pc6 = st.columns(2)
+                _PS_NEW_TYPES    = ["", "RPA", "AI Agent", "Presales"]
+                _ps_new_type     = _pc5.selectbox("Type", _PS_NEW_TYPES, key="ps_new_type",
+                                                   format_func=lambda x: "— Select type —" if x == "" else x)
+                _PS_NEW_STATUSES = ["Internal POC", "External POC",
+                                    "In Progress", "Completed", "Discontinued"]
+                _ps_new_status   = _pc6.selectbox("Status", _PS_NEW_STATUSES, key="ps_new_status")
+
+                _pc7, _pc8, _pc9 = st.columns([1.5, 1.5, 2])
+                _ps_new_start_dt = _pc7.date_input("Start Date (optional)", value=None,
+                                                    key="ps_new_start", format="DD/MM/YYYY")
+                _ps_new_end_dt   = _pc8.date_input("End Date (optional)", value=None,
+                                                    key="ps_new_end", format="DD/MM/YYYY")
+                _ps_new_comment  = _pc9.text_area("Notes / Comment", key="ps_new_comment", height=68)
+                _ps_new_start = _ps_new_start_dt.strftime("%d/%m/%Y") if _ps_new_start_dt else ""
+                _ps_new_end   = _ps_new_end_dt.strftime("%d/%m/%Y")   if _ps_new_end_dt   else ""
+
+                if st.button("Save New Entry", type="primary", key="ps_new_save"):
+                    _ps_errs = []
+                    if not _ps_new_name.strip():   _ps_errs.append("Project name is required.")
+                    if not _ps_new_client.strip(): _ps_errs.append("Client name is required.")
+                    if _ps_errs:
+                        for _e in _ps_errs: st.error(_e)
+                    else:
+                        _ps_row = {
+                            "id": st.session_state.next_id,
+                            "name": _ps_new_name.strip(),
+                            "client": _ps_new_client.strip(),
+                            "lead": _ps_new_lead.strip() if _ps_new_lead != "── Type new ──" else "",
+                            "employee": _ps_new_emp,
+                            "status": _ps_new_status,
+                            "proj_type": _ps_new_type,
+                            "start": _ps_new_start,
+                            "end": _ps_new_end,
+                            "po": "", "desc": _ps_new_comment.strip(),
+                            "manual_hrs": "", "auto_hrs": "", "cost_per_hr": "",
+                            "hours_saved": "", "cost_saved": "", "roi_pct": "",
+                            "is_new": True, "is_active": True,
+                        }
+                        st.session_state.projects = pd.concat(
+                            [st.session_state.projects, pd.DataFrame([_ps_row])], ignore_index=True
+                        )
+                        st.session_state.next_id += 1
+                        save_to_excel(st.session_state.projects)
+                        st.session_state.excel_mtime = excel_mtime()
+                        st.session_state.toast = {"msg": f'"{_ps_new_name.strip()}" added!', "type": "success"}
+                        st.rerun()
+
+    # ── Sub-tabs ──────────────────────────────────────────────────────────────
+    _ps_t2, _ps_t3, _ps_t4 = st.tabs(["In Progress", "Completed", "Discontinued"])
+
+    _POC_MASK = df["client"].isin(_POC_CLIENTS) | (df["proj_type"].fillna("").str.strip() == "Presales")
+    _ACTIVE_STATUSES = {"In Progress", "Presales", "Internal POC", "External POC"}
+
+    with _ps_t2:
+        _ip_df = df[_POC_MASK & df["status"].isin(_ACTIVE_STATUSES)].copy()
+        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 12px">'
+                    'POC / Presales projects currently in development</p>', unsafe_allow_html=True)
+        _render_poc_table(_ip_df, "poc_ip")
+
+    with _ps_t3:
+        _done_df = df[_POC_MASK & (df["status"] == "Completed")].copy()
+        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 12px">'
+                    'Successfully completed POC / Presales projects</p>', unsafe_allow_html=True)
+        _render_poc_table(_done_df, "poc_done")
+
+    with _ps_t4:
+        _disc_df = df[_POC_MASK & (df["status"] == "Discontinued")].copy()
+        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 12px">'
+                    'Discontinued POC / Presales projects</p>', unsafe_allow_html=True)
+        _render_poc_table(_disc_df, "poc_disc")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: LICENSE
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "license" and role != "employee":
     st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">License Management</h2>', unsafe_allow_html=True)
-    st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Track tool licenses, seat counts, and expiry dates</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Track purchased and sold licenses</p>', unsafe_allow_html=True)
 
     def _lc_expiry_badge(end_date: str) -> str:
         if not end_date:
@@ -1485,82 +1773,197 @@ elif st.session_state.active_tab == "license" and role != "employee":
         except ValueError:
             return f'<span style="font-size:11px;color:#64748B">{esc(end_date)}</span>'
 
-    _licenses_all = auth.get_all_licenses()
+    _licenses_all     = auth.get_all_licenses()
+    _sold_licenses_all = auth.get_all_sold_licenses()
 
-    # ── Edit form (shown when edit button clicked) ────────────────────────────
-    if st.session_state.lc_edit_id is not None:
-        _lc_all = _licenses_all
-        _lc_rec = next((x for x in _lc_all if x["id"] == st.session_state.lc_edit_id), None)
-        if _lc_rec:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:10px">Edit License</div>', unsafe_allow_html=True)
-                _ec1, _ec2 = st.columns(2)
-                _e_tool  = _ec1.text_input("Tool Name *", value=_lc_rec["tool_name"], key="lc_e_tool")
-                _e_seats = _ec2.number_input("No. of Licenses *", min_value=1, value=int(_lc_rec["no_of_licenses"]), step=1, key="lc_e_seats")
-                _ec3, _ec4 = st.columns(2)
-                _e_start = _ec3.text_input("Start Date (YYYY-MM-DD)", value=_lc_rec["start_date"], key="lc_e_start")
-                _e_end   = _ec4.text_input("End Date (YYYY-MM-DD)", value=_lc_rec["end_date"], key="lc_e_end")
-                _eb1, _eb2 = st.columns([1, 4])
-                if _eb1.button("Save Changes", type="primary", key="lc_save_edit"):
-                    if not _e_tool.strip():
-                        st.error("Tool name is required.")
-                    else:
-                        auth.update_license(st.session_state.lc_edit_id, _e_tool, int(_e_seats), _e_start, _e_end)
-                        save_to_excel(st.session_state.projects)
+    # Tool names from purchased licenses (for Sold License dropdown)
+    _purchased_tool_names = sorted({l["tool_name"].strip() for l in _licenses_all if l["tool_name"].strip()})
+
+    _lc_tab1, _lc_tab2 = st.tabs(["Purchased License", "Sold License"])
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUB-TAB 1 — PURCHASED LICENSE
+    # ══════════════════════════════════════════════════════════════════════════
+    with _lc_tab1:
+        # ── Edit form ────────────────────────────────────────────────────────
+        if st.session_state.lc_edit_id is not None:
+            _lc_rec = next((x for x in _licenses_all if x["id"] == st.session_state.lc_edit_id), None)
+            if _lc_rec:
+                with st.container(border=True):
+                    st.markdown('<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:10px">Edit Purchased License</div>', unsafe_allow_html=True)
+                    _ec1, _ec2 = st.columns(2)
+                    _e_tool  = _ec1.text_input("Tool Name *", value=_lc_rec["tool_name"], key="lc_e_tool")
+                    _e_seats = _ec2.number_input("No. of Licenses *", min_value=1, value=int(_lc_rec["no_of_licenses"]), step=1, key="lc_e_seats")
+                    _ec3, _ec4 = st.columns(2)
+                    _e_start_dt = _ec3.date_input("Start Date", value=_parse_ymd(_lc_rec["start_date"]), key="lc_e_start", format="YYYY-MM-DD")
+                    _e_end_dt   = _ec4.date_input("End Date", value=_parse_ymd(_lc_rec["end_date"]), key="lc_e_end", format="YYYY-MM-DD")
+                    _e_start = _e_start_dt.strftime("%Y-%m-%d") if _e_start_dt else ""
+                    _e_end   = _e_end_dt.strftime("%Y-%m-%d") if _e_end_dt else ""
+                    _eb1, _eb2 = st.columns([1, 4])
+                    if _eb1.button("Save Changes", type="primary", key="lc_save_edit"):
+                        if not _e_tool.strip():
+                            st.error("Tool name is required.")
+                        else:
+                            auth.update_license(st.session_state.lc_edit_id, _e_tool, int(_e_seats), _e_start, _e_end)
+                            save_to_excel(st.session_state.projects)
+                            st.session_state.lc_edit_id = None
+                            st.session_state.toast = {"msg": "License updated!", "type": "success"}
+                            st.rerun()
+                    if _eb2.button("Cancel", key="lc_cancel_edit"):
                         st.session_state.lc_edit_id = None
-                        st.session_state.toast = {"msg": "License updated!", "type": "success"}
                         st.rerun()
-                if _eb2.button("Cancel", key="lc_cancel_edit"):
-                    st.session_state.lc_edit_id = None
-                    st.rerun()
 
-    # ── Add License form ──────────────────────────────────────────────────────
-    with st.expander("Add License", expanded=False):
-        _lc1, _lc2 = st.columns(2)
-        _n_tool  = _lc1.text_input("Tool Name *", key="lc_n_tool")
-        _n_seats = _lc2.number_input("No. of Licenses *", min_value=1, value=1, step=1, key="lc_n_seats")
-        _lc3, _lc4 = st.columns(2)
-        _n_start = _lc3.text_input("Start Date (YYYY-MM-DD)", key="lc_n_start")
-        _n_end   = _lc4.text_input("End Date (YYYY-MM-DD)", key="lc_n_end")
-        if st.button("Add License", type="primary", key="lc_add_btn"):
-            if not _n_tool.strip():
-                st.error("Tool name is required.")
-            else:
-                auth.create_license(_n_tool, int(_n_seats), _n_start, _n_end)
-                save_to_excel(st.session_state.projects)
-                st.session_state.toast = {"msg": f'License "{_n_tool}" added!', "type": "success"}
-                st.rerun()
-
-    # ── License table ─────────────────────────────────────────────────────────
-    _licenses = _licenses_all
-    st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(_licenses)}</b> license(s) tracked</p>', unsafe_allow_html=True)
-
-    if not _licenses:
-        st.info("No licenses added yet. Use the form above to add one.")
-    else:
-        _lhdr = st.columns([0.3, 2.5, 1.2, 1.5, 1.5, 1.4, 0.4, 0.4])
-        for _lc, _ll in zip(_lhdr, ["#", "Tool Name", "No. of Licenses", "Start Date", "End Date", "Status", "", ""]):
-            _lc.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;'
-                         f'letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_ll}</div>',
-                         unsafe_allow_html=True)
-
-        for _lic in _licenses:
-            _lr = st.columns([0.3, 2.5, 1.2, 1.5, 1.5, 1.4, 0.4, 0.4])
-            _lr[0].markdown(cell(_lic["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
-            _lr[1].markdown(f'<span style="font-size:13px;font-weight:700;color:#111827">{esc(_lic["tool_name"])}</span>', unsafe_allow_html=True)
-            _lr[2].markdown(f'<span style="font-size:13px;font-weight:600;color:#2563EB">{_lic["no_of_licenses"]}</span>', unsafe_allow_html=True)
-            _lr[3].markdown(cell(_lic["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
-            _lr[4].markdown(cell(_lic["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
-            _lr[5].markdown(_lc_expiry_badge(_lic["end_date"]), unsafe_allow_html=True)
-            if role == "admin":
-                if _lr[6].button("Edit", key=f"lc_e_{_lic['id']}", help="Edit"):
-                    st.session_state.lc_edit_id = _lic["id"]
-                    st.rerun()
-                if _lr[7].button("Del", key=f"lc_d_{_lic['id']}", help="Delete"):
-                    auth.delete_license(_lic["id"])
+        # ── Add License form ─────────────────────────────────────────────────
+        with st.expander("Add Purchased License", expanded=False):
+            _lc1, _lc2 = st.columns(2)
+            _n_tool  = _lc1.text_input("Tool Name *", key="lc_n_tool")
+            _n_seats = _lc2.number_input("No. of Licenses *", min_value=1, value=1, step=1, key="lc_n_seats")
+            _lc3, _lc4 = st.columns(2)
+            _n_start_dt = _lc3.date_input("Start Date (optional)", value=None, key="lc_n_start", format="YYYY-MM-DD")
+            _n_end_dt   = _lc4.date_input("End Date (optional)", value=None, key="lc_n_end", format="YYYY-MM-DD")
+            _n_start = _n_start_dt.strftime("%Y-%m-%d") if _n_start_dt else ""
+            _n_end   = _n_end_dt.strftime("%Y-%m-%d") if _n_end_dt else ""
+            if st.button("Add License", type="primary", key="lc_add_btn"):
+                if not _n_tool.strip():
+                    st.error("Tool name is required.")
+                else:
+                    auth.create_license(_n_tool, int(_n_seats), _n_start, _n_end)
                     save_to_excel(st.session_state.projects)
-                    st.session_state.toast = {"msg": f'License "{_lic["tool_name"]}" deleted.', "type": "info"}
+                    st.session_state.toast = {"msg": f'License "{_n_tool}" added!', "type": "success"}
                     st.rerun()
+
+        # ── Purchased License table ──────────────────────────────────────────
+        st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(_licenses_all)}</b> license(s) tracked</p>', unsafe_allow_html=True)
+        if not _licenses_all:
+            st.info("No licenses added yet. Use the form above to add one.")
+        else:
+            _lhdr = st.columns([0.3, 2.5, 1.2, 1.5, 1.5, 1.4, 0.4, 0.4])
+            for _lc, _ll in zip(_lhdr, ["#", "Tool Name", "No. of Licenses", "Start Date", "End Date", "Status", "", ""]):
+                _lc.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;'
+                             f'letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_ll}</div>',
+                             unsafe_allow_html=True)
+            for _lic in _licenses_all:
+                _lr = st.columns([0.3, 2.5, 1.2, 1.5, 1.5, 1.4, 0.4, 0.4])
+                _lr[0].markdown(cell(_lic["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
+                _lr[1].markdown(f'<span style="font-size:13px;font-weight:700;color:#111827">{esc(_lic["tool_name"])}</span>', unsafe_allow_html=True)
+                _lr[2].markdown(f'<span style="font-size:13px;font-weight:600;color:#2563EB">{_lic["no_of_licenses"]}</span>', unsafe_allow_html=True)
+                _lr[3].markdown(cell(_lic["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                _lr[4].markdown(cell(_lic["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                _lr[5].markdown(_lc_expiry_badge(_lic["end_date"]), unsafe_allow_html=True)
+                if role == "admin":
+                    with _lr[6]:
+                        st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                        if st.button("✏", key=f"lc_e_{_lic['id']}", help="Edit license", use_container_width=True):
+                            st.session_state.lc_edit_id = _lic["id"]
+                            st.session_state.sl_edit_id = None
+                            st.rerun()
+                    with _lr[7]:
+                        st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                        if st.button("🗑", key=f"lc_d_{_lic['id']}", help="Delete license", use_container_width=True):
+                            auth.delete_license(_lic["id"])
+                            save_to_excel(st.session_state.projects)
+                            st.session_state.toast = {"msg": f'License "{_lic["tool_name"]}" deleted.', "type": "info"}
+                            st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUB-TAB 2 — SOLD LICENSE
+    # ══════════════════════════════════════════════════════════════════════════
+    with _lc_tab2:
+        # ── Edit form ────────────────────────────────────────────────────────
+        if st.session_state.sl_edit_id is not None:
+            _sl_rec = next((x for x in _sold_licenses_all if x["id"] == st.session_state.sl_edit_id), None)
+            if _sl_rec:
+                with st.container(border=True):
+                    st.markdown('<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:10px">Edit Sold License</div>', unsafe_allow_html=True)
+                    _se1, _se2 = st.columns(2)
+                    _sl_tool_opts = _purchased_tool_names or [""]
+                    _sl_e_tool_idx = _sl_tool_opts.index(_sl_rec["tool_name"]) if _sl_rec["tool_name"] in _sl_tool_opts else 0
+                    _sl_e_tool   = _se1.selectbox("Tool Name *", _sl_tool_opts, index=_sl_e_tool_idx, key="sl_e_tool")
+                    _sl_e_client = _se2.text_input("Client *", value=_sl_rec["client"], key="sl_e_client")
+                    _se3, _se4 = st.columns(2)
+                    _sl_e_seats  = _se3.number_input("No. of Licenses *", min_value=1, value=int(_sl_rec["no_of_licenses"]), step=1, key="sl_e_seats")
+                    _sl_e_notes  = _se4.text_input("Notes", value=_sl_rec["notes"], key="sl_e_notes")
+                    _se5, _se6 = st.columns(2)
+                    _sl_e_start_dt = _se5.date_input("Start Date", value=_parse_ymd(_sl_rec["start_date"]), key="sl_e_start", format="YYYY-MM-DD")
+                    _sl_e_end_dt   = _se6.date_input("End Date", value=_parse_ymd(_sl_rec["end_date"]), key="sl_e_end", format="YYYY-MM-DD")
+                    _sl_e_start = _sl_e_start_dt.strftime("%Y-%m-%d") if _sl_e_start_dt else ""
+                    _sl_e_end   = _sl_e_end_dt.strftime("%Y-%m-%d") if _sl_e_end_dt else ""
+                    _sb1, _sb2 = st.columns([1, 4])
+                    if _sb1.button("Save Changes", type="primary", key="sl_save_edit"):
+                        if not _sl_e_tool or not _sl_e_client.strip():
+                            st.error("Tool name and client are required.")
+                        else:
+                            auth.update_sold_license(st.session_state.sl_edit_id, _sl_e_tool,
+                                                     _sl_e_client, int(_sl_e_seats),
+                                                     _sl_e_start, _sl_e_end, _sl_e_notes)
+                            save_to_excel(st.session_state.projects)
+                            st.session_state.sl_edit_id = None
+                            st.session_state.toast = {"msg": "Sold license updated!", "type": "success"}
+                            st.rerun()
+                    if _sb2.button("Cancel", key="sl_cancel_edit"):
+                        st.session_state.sl_edit_id = None
+                        st.rerun()
+
+        # ── Add Sold License form ────────────────────────────────────────────
+        with st.expander("Add Sold License", expanded=False):
+            if not _purchased_tool_names:
+                st.info("Add at least one purchased license first — the tool name list comes from there.")
+            else:
+                _sa1, _sa2 = st.columns(2)
+                _sl_n_tool   = _sa1.selectbox("Tool Name *", _purchased_tool_names, key="sl_n_tool")
+                _sl_n_client = _sa2.text_input("Client *", key="sl_n_client")
+                _sa3, _sa4 = st.columns(2)
+                _sl_n_seats  = _sa3.number_input("No. of Licenses *", min_value=1, value=1, step=1, key="sl_n_seats")
+                _sl_n_notes  = _sa4.text_input("Notes (optional)", key="sl_n_notes")
+                _sa5, _sa6 = st.columns(2)
+                _sl_n_start_dt = _sa5.date_input("Start Date (optional)", value=None, key="sl_n_start", format="YYYY-MM-DD")
+                _sl_n_end_dt   = _sa6.date_input("End Date (optional)", value=None, key="sl_n_end", format="YYYY-MM-DD")
+                _sl_n_start = _sl_n_start_dt.strftime("%Y-%m-%d") if _sl_n_start_dt else ""
+                _sl_n_end   = _sl_n_end_dt.strftime("%Y-%m-%d") if _sl_n_end_dt else ""
+                if st.button("Add Sold License", type="primary", key="sl_add_btn"):
+                    if not _sl_n_client.strip():
+                        st.error("Client is required.")
+                    else:
+                        auth.create_sold_license(_sl_n_tool, _sl_n_client, int(_sl_n_seats),
+                                                 _sl_n_start, _sl_n_end, _sl_n_notes)
+                        save_to_excel(st.session_state.projects)
+                        st.session_state.toast = {"msg": f'Sold license "{_sl_n_tool}" added!', "type": "success"}
+                        st.rerun()
+
+        # ── Sold License table ───────────────────────────────────────────────
+        st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(_sold_licenses_all)}</b> sold license record(s)</p>', unsafe_allow_html=True)
+        if not _sold_licenses_all:
+            st.info("No sold licenses recorded yet. Use the form above to add one.")
+        else:
+            _slhdr = st.columns([0.3, 2.0, 2.0, 1.0, 1.4, 1.4, 1.4, 1.8, 0.4, 0.4])
+            for _slc, _sll in zip(_slhdr, ["#", "Tool Name", "Client", "Licenses", "Start Date", "End Date", "Status", "Notes", "", ""]):
+                _slc.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;'
+                              f'letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_sll}</div>',
+                              unsafe_allow_html=True)
+            for _sl in _sold_licenses_all:
+                _slr = st.columns([0.3, 2.0, 2.0, 1.0, 1.4, 1.4, 1.4, 1.8, 0.4, 0.4])
+                _slr[0].markdown(cell(_sl["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
+                _slr[1].markdown(f'<span style="font-size:12px;font-weight:700;color:#111827">{esc(_sl["tool_name"])}</span>', unsafe_allow_html=True)
+                _slr[2].markdown(f'<span style="font-size:12px;color:#374151">{esc(_sl["client"])}</span>', unsafe_allow_html=True)
+                _slr[3].markdown(f'<span style="font-size:13px;font-weight:600;color:#2563EB">{_sl["no_of_licenses"]}</span>', unsafe_allow_html=True)
+                _slr[4].markdown(cell(_sl["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                _slr[5].markdown(cell(_sl["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                _slr[6].markdown(_lc_expiry_badge(_sl["end_date"]), unsafe_allow_html=True)
+                _slr[7].markdown(cell(_sl["notes"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                if role == "admin":
+                    with _slr[8]:
+                        st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                        if st.button("✏", key=f"sl_e_{_sl['id']}", help="Edit sold license", use_container_width=True):
+                            st.session_state.sl_edit_id = _sl["id"]
+                            st.session_state.lc_edit_id = None
+                            st.rerun()
+                    with _slr[9]:
+                        st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                        if st.button("🗑", key=f"sl_d_{_sl['id']}", help="Delete sold license", use_container_width=True):
+                            auth.delete_sold_license(_sl["id"])
+                            save_to_excel(st.session_state.projects)
+                            st.session_state.toast = {"msg": f'Sold license deleted.', "type": "info"}
+                            st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: AI AGENT
@@ -1626,6 +2029,77 @@ elif st.session_state.active_tab == "users" and role == "admin":
 
     _users_cache = auth.get_all_users()
 
+    # ── Import users from Excel ───────────────────────────────────────────────
+    with st.expander("Import Users from Excel", expanded=False):
+        st.markdown(
+            '<p style="color:#64748B;font-size:12px;margin-bottom:10px">'
+            'Upload an Excel file with columns: <b>Name</b>, <b>Email</b>, <b>Password</b>, '
+            '<b>Role</b> (optional — defaults to <i>employee</i>). '
+            'Existing users (same email) will be skipped.</p>',
+            unsafe_allow_html=True
+        )
+        _tmpl_df = pd.DataFrame([
+            {"Name": "Alice Smith", "Email": "alice@example.com", "Password": "Alice@123", "Role": "employee"},
+            {"Name": "Bob Lead",    "Email": "bob@example.com",   "Password": "Bob@456",   "Role": "lead"},
+        ])
+        import io as _io
+        _tmpl_buf = _io.BytesIO()
+        _tmpl_df.to_excel(_tmpl_buf, index=False, engine="openpyxl")
+        st.download_button(
+            "Download Template", data=_tmpl_buf.getvalue(),
+            file_name="users_import_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_user_tmpl"
+        )
+        _uploaded = st.file_uploader("Upload Excel", type=["xlsx", "xls"], key="import_users_file")
+        if _uploaded:
+            try:
+                _imp_df = pd.read_excel(_uploaded, dtype=str, engine="openpyxl").fillna("")
+                _imp_df.columns = [c.strip() for c in _imp_df.columns]
+                _required = {"Name", "Email", "Password"}
+                if not _required.issubset(set(_imp_df.columns)):
+                    st.error(f"Missing columns. Required: {', '.join(_required)}")
+                else:
+                    _existing_emails = {u["email"].strip().lower() for u in _users_cache}
+                    _created, _skipped, _errors = [], [], []
+                    _pw_map = {}
+                    for _, _ir in _imp_df.iterrows():
+                        _iname  = str(_ir["Name"]).strip()
+                        _iemail = str(_ir["Email"]).strip().lower()
+                        _ipass  = str(_ir["Password"]).strip()
+                        _irole  = str(_ir.get("Role", "employee")).strip().lower()
+                        if _irole not in auth.ROLES:
+                            _irole = "employee"
+                        if not _iname or not _iemail or "@" not in _iemail:
+                            _errors.append(f"Invalid row: {_iname} / {_iemail}")
+                            continue
+                        if len(_ipass) < 6:
+                            _errors.append(f"Password too short for {_iemail} (min 6 chars)")
+                            continue
+                        if _iemail in _existing_emails:
+                            _skipped.append(_iemail)
+                            continue
+                        try:
+                            auth.create_user(_iname, _iemail, _ipass, _irole)
+                            _pw_map[_iemail] = _ipass
+                            _created.append(_iname)
+                            _existing_emails.add(_iemail)
+                        except Exception as _ex:
+                            _errors.append(f"{_iemail}: {_ex}")
+                    if _pw_map:
+                        sync_users_excel(_pw_map)
+                        save_to_excel(st.session_state.projects)
+                    if _created:
+                        st.success(f"Created {len(_created)} user(s): {', '.join(_created)}")
+                    if _skipped:
+                        st.info(f"Skipped {len(_skipped)} existing email(s): {', '.join(_skipped)}")
+                    for _e in _errors:
+                        st.error(_e)
+                    if _created:
+                        st.rerun()
+            except Exception as _ex:
+                st.error(f"Could not read file: {_ex}")
+
     # ── Create user form ──────────────────────────────────────────────────────
     with st.expander("Create New User", expanded=False):
         with st.container():
@@ -1645,6 +2119,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                 else:
                     try:
                         auth.create_user(nu_name.strip(), nu_email.strip(), nu_pass, nu_role)
+                        sync_users_excel({nu_email.strip().lower(): nu_pass})
                         save_to_excel(st.session_state.projects)
                         st.session_state.toast = {"msg": f'User "{nu_name.strip()}" created!', "type": "success"}
                         st.rerun()
@@ -1676,6 +2151,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                     else:
                         try:
                             auth.update_user(st.session_state.user_edit_id, _eu_name, _eu_email, _eu_role)
+                            sync_users_excel()
                             save_to_excel(st.session_state.projects)
                             st.session_state.user_edit_id = None
                             st.session_state.toast = {"msg": f'User "{_eu_name.strip()}" updated!', "type": "success"}
@@ -1702,6 +2178,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                 if rpc.button("Save Password", type="primary", key="rp_save"):
                     if _new_pwd and len(_new_pwd) >= 6:
                         auth.reset_password(_rp_uid, _new_pwd)
+                        sync_users_excel({_rp_user["email"].strip().lower(): _new_pwd})
                         st.session_state.reset_pwd_uid = None
                         st.session_state.toast = {"msg": "Password reset successfully!", "type": "success"}
                         st.rerun()
@@ -1716,13 +2193,13 @@ elif st.session_state.active_tab == "users" and role == "admin":
     _all_users = _users_cache
     st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 10px"><b>{len(_all_users)}</b> registered users</p>', unsafe_allow_html=True)
 
-    _uhdr = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.5, 0.5, 0.5, 0.5])
-    for _col, _lbl in zip(_uhdr, ["ID", "Name", "Email", "Role", "Active", "Edit", "Reset", "Toggle", "Del"]):
+    _uhdr = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.45, 0.45, 0.45, 0.45])
+    for _col, _lbl in zip(_uhdr, ["ID", "Name", "Email", "Role", "Active", "", "", "", ""]):
         _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
 
     _role_colors = {"admin": "#1D4ED8", "lead": "#065F46", "manager": "#92400E", "employee": "#374151", "sales": "#0369A1"}
     for _u in _all_users:
-        _uc = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.5, 0.5, 0.5, 0.5])
+        _uc = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.45, 0.45, 0.45, 0.45])
         _uc[0].markdown(cell(_u["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
         _uc[1].markdown(f'<span style="font-size:12px;font-weight:600;color:#111827">{esc(_u["name"])}</span>', unsafe_allow_html=True)
         _uc[2].markdown(cell(_u["email"]), unsafe_allow_html=True)
@@ -1730,35 +2207,45 @@ elif st.session_state.active_tab == "users" and role == "admin":
         _uc[3].markdown(f'<span style="font-size:11px;font-weight:700;color:{_rc}">{_u["role"].upper()}</span>', unsafe_allow_html=True)
         _uc[4].markdown(f'<span style="font-size:11px;font-weight:700;color:{"#10B981" if _u["is_active"] else "#EF4444"}">{"Yes" if _u["is_active"] else "No"}</span>', unsafe_allow_html=True)
 
-        if _uc[5].button("Edit", key=f"eu_{_u['id']}", help="Edit user"):
-            st.session_state.user_edit_id = _u["id"]
-            st.session_state.reset_pwd_uid = None
-            st.rerun()
+        with _uc[5]:
+            st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+            if st.button("✏", key=f"eu_{_u['id']}", help="Edit user", use_container_width=True):
+                st.session_state.user_edit_id = _u["id"]
+                st.session_state.reset_pwd_uid = None
+                st.rerun()
 
-        if _uc[6].button("Reset", key=f"rp_{_u['id']}", help="Reset password"):
-            st.session_state.reset_pwd_uid = _u["id"]
-            st.session_state.user_edit_id = None
-            st.rerun()
+        with _uc[6]:
+            st.markdown('<span class="act-warn-marker"></span>', unsafe_allow_html=True)
+            if st.button("🔑", key=f"rp_{_u['id']}", help="Reset password", use_container_width=True):
+                st.session_state.reset_pwd_uid = _u["id"]
+                st.session_state.user_edit_id = None
+                st.rerun()
 
-        _tog_lbl = "Lock" if _u["is_active"] else "Unlock"
+        _tog_lbl = "🔒" if _u["is_active"] else "🔓"
         _tog_tip = "Deactivate" if _u["is_active"] else "Activate"
-        if _uc[7].button(_tog_lbl, key=f"tog_{_u['id']}", help=_tog_tip):
-            if _u["id"] != cu["id"]:
-                auth.set_active(_u["id"], not _u["is_active"])
-                save_to_excel(st.session_state.projects)
-                st.session_state.toast = {"msg": f'User {"deactivated" if _u["is_active"] else "activated"}.', "type": "info"}
-                st.rerun()
-            else:
-                st.warning("You cannot deactivate your own account.")
+        with _uc[7]:
+            st.markdown('<span class="act-warn-marker"></span>', unsafe_allow_html=True)
+            if st.button(_tog_lbl, key=f"tog_{_u['id']}", help=_tog_tip, use_container_width=True):
+                if _u["id"] != cu["id"]:
+                    auth.set_active(_u["id"], not _u["is_active"])
+                    sync_users_excel()
+                    save_to_excel(st.session_state.projects)
+                    st.session_state.toast = {"msg": f'User {"deactivated" if _u["is_active"] else "activated"}.', "type": "info"}
+                    st.rerun()
+                else:
+                    st.warning("You cannot deactivate your own account.")
 
-        if _uc[8].button("Del", key=f"du_{_u['id']}", help="Delete user"):
-            if _u["id"] != cu["id"]:
-                auth.delete_user(_u["id"])
-                save_to_excel(st.session_state.projects)
-                st.session_state.toast = {"msg": f'User "{_u["name"]}" deleted.', "type": "info"}
-                st.rerun()
-            else:
-                st.warning("You cannot delete your own account.")
+        with _uc[8]:
+            st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+            if st.button("🗑", key=f"du_{_u['id']}", help="Delete user", use_container_width=True):
+                if _u["id"] != cu["id"]:
+                    auth.delete_user(_u["id"])
+                    sync_users_excel()
+                    save_to_excel(st.session_state.projects)
+                    st.session_state.toast = {"msg": f'User "{_u["name"]}" deleted.', "type": "info"}
+                    st.rerun()
+                else:
+                    st.warning("You cannot delete your own account.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: TASKS  (all roles — employees see only their own tasks)
@@ -1782,87 +2269,276 @@ elif st.session_state.active_tab == "tasks":
             for _t in _my_tasks:
                 with st.container(border=True):
                     _tl, _tr = st.columns([3, 1.2])
-                    _sc = _STAT_COLORS.get(_t["status"], "#94A3B8")
                     _pct = int(_t["progress"])
                     _bar_c = "#10B981" if _pct == 100 else "#3B82F6"
                     with _tl:
                         st.markdown(f'<div style="font-size:14px;font-weight:700;color:#111827;margin-bottom:4px">{esc(_t["title"])}</div>', unsafe_allow_html=True)
                         if _t["description"]:
                             st.markdown(f'<div style="font-size:12px;color:#64748B;margin-bottom:6px;font-style:italic">{esc(_t["description"])}</div>', unsafe_allow_html=True)
-                        st.markdown(f'<div style="font-size:11px;color:#64748B;margin-bottom:6px">Assigned by: <b>{esc(_t["assigned_by"])}</b>' +
-                                    (f' &nbsp;·&nbsp; Due: <b>{esc(_t["due_date"])}</b>' if _t["due_date"] else "") + '</div>', unsafe_allow_html=True)
+                        _date_meta = f'Assigned by: <b>{esc(_t["assigned_by"])}</b>'
+                        if _t.get("start_date"):
+                            _date_meta += f' &nbsp;·&nbsp; Start: <b>{esc(_t["start_date"])}</b>'
+                        if _t.get("due_date"):
+                            _date_meta += f' &nbsp;·&nbsp; Due: <b>{esc(_t["due_date"])}</b>'
+                        st.markdown(f'<div style="font-size:11px;color:#64748B;margin-bottom:6px">{_date_meta}</div>', unsafe_allow_html=True)
                         st.markdown(f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_pct}%;background:{_bar_c}"></div></div>'
                                     f'<div style="font-size:10px;color:#64748B;margin-top:2px">{_pct}% complete</div>', unsafe_allow_html=True)
                     with _tr:
                         _new_prog = st.slider("Progress %", 0, 100, _pct, step=5, key=f"prog_{_t['id']}")
                         _stat_idx = auth.TASK_STATUSES.index(_t["status"]) if _t["status"] in auth.TASK_STATUSES else 0
                         _new_stat = st.selectbox("Status", auth.TASK_STATUSES, index=_stat_idx, key=f"stat_{_t['id']}")
-                        if st.button("Save", type="primary", key=f"save_p_{_t['id']}", use_container_width=True):
-                            auth.update_task_progress(_t["id"], _new_prog, _new_stat)
-                            st.session_state.toast = {"msg": "Progress updated!", "type": "success"}
-                            st.rerun()
+                    _new_comment = st.text_area(
+                        "Comments / Notes",
+                        value=_t.get("comment", ""),
+                        key=f"comment_{_t['id']}",
+                        height=80,
+                        placeholder="Add a note, update, or blocker…",
+                    )
+                    if st.button("Save Update", type="primary", key=f"save_p_{_t['id']}", use_container_width=True):
+                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _new_comment)
+                        st.session_state.toast = {"msg": "Task updated!", "type": "success"}
+                        st.rerun()
+
+                    # ── Weekly Update (locked after submission) ────────────────
+                    _wk_start = auth.get_week_start()
+                    _wk_end_dt = date.fromisoformat(_wk_start) + timedelta(days=6)
+                    _wk_label = (f"{date.fromisoformat(_wk_start).strftime('%d %b')} – "
+                                 f"{_wk_end_dt.strftime('%d %b %Y')}")
+                    st.markdown(
+                        f'<div style="font-size:11px;font-weight:700;color:#475569;'
+                        f'border-top:1px solid #E2E8F0;margin-top:10px;padding-top:10px">'
+                        f'Weekly Update — {_wk_label}</div>',
+                        unsafe_allow_html=True)
+                    _existing_wc = auth.get_user_week_comment(_t["id"], cu["id"], _wk_start)
+                    if _existing_wc:
+                        st.markdown(
+                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:8px;'
+                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:4px">'
+                            f'<span style="font-weight:700;color:#10B981">Submitted ✓</span>&nbsp; '
+                            f'{esc(_existing_wc["comment"])}'
+                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_existing_wc["created_at"])}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True)
+                    else:
+                        _wc_text = st.text_area(
+                            "Weekly update", height=70,
+                            key=f"wc_{_t['id']}",
+                            placeholder="Describe your progress this week…",
+                            label_visibility="collapsed")
+                        if st.button("Submit Weekly Update", key=f"wc_sub_{_t['id']}",
+                                     use_container_width=True):
+                            if _wc_text.strip():
+                                auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
+                                st.session_state.toast = {"msg": "Weekly update submitted!", "type": "success"}
+                                st.rerun()
+                            else:
+                                st.warning("Please enter a comment before submitting.")
 
     else:
         # ── Admin / Lead / Manager: create + view all tasks ───────────────────
         st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">Task Management</h2>', unsafe_allow_html=True)
         st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Assign and track tasks for your team</p>', unsafe_allow_html=True)
 
-        with st.expander("Assign New Task", expanded=False):
-            _assignable = auth.get_employees_and_leads()
-            if not _assignable:
-                st.warning("No employee or lead accounts found. Create users under the Users tab first.")
+        def _render_my_tasks_panel(key_prefix):
+            _my_tasks = auth.get_user_tasks(cu["id"])
+            if not _my_tasks:
+                st.info("No tasks assigned to you yet.")
             else:
-                _ta1, _ta2 = st.columns(2)
-                _nt_title = _ta1.text_input("Task Title *", key="nt_title")
-                _emp_opts  = [f"{_e['name']}  [{_e['role'].upper()}]  ({_e['email']})" for _e in _assignable]
-                _emp_sel   = _ta2.selectbox("Assign To *", _emp_opts, key="nt_emp",
-                                            help="Employees and Leads are listed here.")
-                _nt_desc   = st.text_area("Description (optional)", key="nt_desc", height=80)
-                _ta3, _ta4 = st.columns(2)
-                _nt_due    = _ta3.text_input("Due Date (YYYY-MM-DD, optional)", key="nt_due")
-                _ta4.write("")
-                if st.button("Assign Task", type="primary", key="assign_task_btn"):
-                    if not _nt_title.strip():
-                        st.error("Task title is required.")
-                    else:
-                        _sel_idx = _emp_opts.index(_emp_sel)
-                        _sel_emp = _assignable[_sel_idx]
-                        auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip())
-                        st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
+                st.markdown(f'<p style="color:#64748B;font-size:12px;margin-bottom:12px"><b>{len(_my_tasks)}</b> task(s) assigned to you</p>', unsafe_allow_html=True)
+                for _t in _my_tasks:
+                    with st.container(border=True):
+                        _tl, _tr = st.columns([3, 1.2])
+                        _pct   = int(_t["progress"])
+                        _bar_c = "#10B981" if _pct == 100 else "#3B82F6"
+                        with _tl:
+                            st.markdown(f'<div style="font-size:14px;font-weight:700;color:#111827;margin-bottom:4px">{esc(_t["title"])}</div>', unsafe_allow_html=True)
+                            if _t["description"]:
+                                st.markdown(f'<div style="font-size:12px;color:#64748B;margin-bottom:6px;font-style:italic">{esc(_t["description"])}</div>', unsafe_allow_html=True)
+                            _lmeta = f'Assigned by: <b>{esc(_t["assigned_by"])}</b>'
+                            if _t.get("start_date"):
+                                _lmeta += f' &nbsp;·&nbsp; Start: <b>{esc(_t["start_date"])}</b>'
+                            if _t.get("due_date"):
+                                _lmeta += f' &nbsp;·&nbsp; Due: <b>{esc(_t["due_date"])}</b>'
+                            st.markdown(f'<div style="font-size:11px;color:#64748B;margin-bottom:6px">{_lmeta}</div>', unsafe_allow_html=True)
+                            st.markdown(
+                                f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_pct}%;background:{_bar_c}"></div></div>'
+                                f'<div style="font-size:10px;color:#64748B;margin-top:2px">{_pct}% complete</div>',
+                                unsafe_allow_html=True)
+                        with _tr:
+                            _new_prog = st.slider("Progress %", 0, 100, _pct, step=5, key=f"{key_prefix}prog_{_t['id']}")
+                            _stat_idx = auth.TASK_STATUSES.index(_t["status"]) if _t["status"] in auth.TASK_STATUSES else 0
+                            _new_stat = st.selectbox("Status", auth.TASK_STATUSES, index=_stat_idx, key=f"{key_prefix}stat_{_t['id']}")
+                    _new_comment = st.text_area(
+                        "Comments / Notes",
+                        value=_t.get("comment", ""),
+                        key=f"{key_prefix}comment_{_t['id']}",
+                        height=80,
+                        placeholder="Add a note, update, or blocker…",
+                    )
+                    if st.button("Save Update", type="primary", key=f"{key_prefix}save_{_t['id']}", use_container_width=True):
+                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _new_comment)
+                        st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
 
-        _all_tasks = auth.get_all_tasks()
-        st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(_all_tasks)}</b> total tasks</p>', unsafe_allow_html=True)
+                    # ── Weekly Update ──────────────────────────────────────────
+                    _wk_start = auth.get_week_start()
+                    _wk_end_dt = date.fromisoformat(_wk_start) + timedelta(days=6)
+                    _wk_label = (f"{date.fromisoformat(_wk_start).strftime('%d %b')} – "
+                                 f"{_wk_end_dt.strftime('%d %b %Y')}")
+                    st.markdown(
+                        f'<div style="font-size:11px;font-weight:700;color:#475569;'
+                        f'border-top:1px solid #E2E8F0;margin-top:10px;padding-top:10px">'
+                        f'Weekly Update — {_wk_label}</div>',
+                        unsafe_allow_html=True)
+                    _existing_wc = auth.get_user_week_comment(_t["id"], cu["id"], _wk_start)
+                    if _existing_wc:
+                        st.markdown(
+                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:8px;'
+                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:4px">'
+                            f'<span style="font-weight:700;color:#10B981">Submitted ✓</span>&nbsp; '
+                            f'{esc(_existing_wc["comment"])}'
+                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_existing_wc["created_at"])}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True)
+                    else:
+                        _wc_text = st.text_area(
+                            "Weekly update", height=70,
+                            key=f"{key_prefix}wc_{_t['id']}",
+                            placeholder="Describe your progress this week…",
+                            label_visibility="collapsed")
+                        if st.button("Submit Weekly Update", key=f"{key_prefix}wc_sub_{_t['id']}",
+                                     use_container_width=True):
+                            if _wc_text.strip():
+                                auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
+                                st.session_state.toast = {"msg": "Weekly update submitted!", "type": "success"}
+                                st.rerun()
+                            else:
+                                st.warning("Please enter a comment before submitting.")
 
-        if not _all_tasks:
-            st.info("No tasks yet. Use the form above to assign tasks to employees.")
+        def _render_all_tasks_panel():
+            with st.expander("Assign New Task", expanded=False):
+                _assignable = auth.get_employees_and_leads()
+                if not _assignable:
+                    st.warning("No employee or lead accounts found. Create users under the Users tab first.")
+                else:
+                    _ta1, _ta2 = st.columns(2)
+                    _nt_title = _ta1.text_input("Task Title *", key="nt_title")
+                    _emp_opts  = [f"{_e['name']}  [{_e['role'].upper()}]  ({_e['email']})" for _e in _assignable]
+                    _emp_sel   = _ta2.selectbox("Assign To *", _emp_opts, key="nt_emp",
+                                                help="Employees and Leads are listed here.")
+                    _nt_desc   = st.text_area("Description (optional)", key="nt_desc", height=80)
+                    _ta3, _ta4 = st.columns(2)
+                    _nt_start_dt = _ta3.date_input("Start Date (optional)", value=None, key="nt_start_dt", format="YYYY-MM-DD")
+                    _nt_due_dt   = _ta4.date_input("Due Date (optional)", value=None, key="nt_due_dt", format="YYYY-MM-DD")
+                    _nt_start = _nt_start_dt.strftime("%Y-%m-%d") if _nt_start_dt else ""
+                    _nt_due   = _nt_due_dt.strftime("%Y-%m-%d") if _nt_due_dt else ""
+                    if st.button("Assign Task", type="primary", key="assign_task_btn"):
+                        if not _nt_title.strip():
+                            st.error("Task title is required.")
+                        else:
+                            _sel_idx = _emp_opts.index(_emp_sel)
+                            _sel_emp = _assignable[_sel_idx]
+                            auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
+                            st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
+                            st.rerun()
+
+            _all_tasks = auth.get_all_tasks()
+            st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(_all_tasks)}</b> total tasks</p>', unsafe_allow_html=True)
+
+            # ── Comment date-range filter ──────────────────────────────────────
+            with st.container(border=True):
+                st.markdown('<div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:8px">Weekly Comment Filter</div>', unsafe_allow_html=True)
+                _cf1, _cf2 = st.columns(2)
+                _cm_from_dt = _cf1.date_input(
+                    "From (week start)", key="cm_from",
+                    value=date.today() - timedelta(weeks=4),
+                    format="YYYY-MM-DD")
+                _cm_to_dt = _cf2.date_input(
+                    "To (week start)", key="cm_to",
+                    value=date.today(),
+                    format="YYYY-MM-DD")
+                _cm_from_str = _cm_from_dt.strftime("%Y-%m-%d") if _cm_from_dt else None
+                _cm_to_str   = _cm_to_dt.strftime("%Y-%m-%d") if _cm_to_dt else None
+
+            if not _all_tasks:
+                st.info("No tasks yet. Use the form above to assign tasks to employees.")
+            else:
+                _thdr = st.columns([2.2, 2.0, 1.6, 1.0, 1.2, 1.2, 0.4])
+                for _col, _lbl in zip(_thdr, ["Task", "Assigned To", "Status", "Progress", "Start Date", "Due Date", ""]):
+                    _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
+
+                for _t in _all_tasks:
+                    _tc = st.columns([2.2, 2.0, 1.6, 1.0, 1.2, 1.2, 0.4])
+                    _tdesc = _t["description"]
+                    _tdesc_short = (_tdesc[:50] + "…") if len(_tdesc) > 50 else _tdesc
+                    _tc[0].markdown(
+                        f'<span style="font-size:12px;font-weight:600;color:#111827">{esc(_t["title"])}</span>'
+                        + (f'<br><span style="font-size:10px;color:#64748B">{esc(_tdesc_short)}</span>' if _tdesc_short else ""),
+                        unsafe_allow_html=True)
+                    _tc[1].markdown(
+                        f'<span style="font-size:12px">{esc(_t["assigned_to"])}</span>'
+                        f'<br><span style="font-size:10px;color:#64748B">{esc(_t["assigned_to_email"])}</span>',
+                        unsafe_allow_html=True)
+                    _tsc = _STAT_COLORS.get(_t["status"], "#94A3B8")
+                    _tc[2].markdown(f'<span style="font-size:11px;font-weight:700;color:{_tsc}">{esc(_t["status"])}</span>', unsafe_allow_html=True)
+                    _tpct = int(_t["progress"])
+                    _tbar = "#10B981" if _tpct == 100 else "#3B82F6"
+                    _tc[3].markdown(
+                        f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_tpct}%;background:{_tbar}"></div></div>'
+                        f'<div style="font-size:10px;color:#64748B">{_tpct}%</div>',
+                        unsafe_allow_html=True)
+                    _tc[4].markdown(cell(_t.get("start_date") or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                    _tc[5].markdown(cell(_t["due_date"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                    with _tc[6]:
+                        st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                        if st.button("🗑", key=f"dt_{_t['id']}", help="Delete task", use_container_width=True):
+                            auth.delete_task(_t["id"])
+                            st.session_state.toast = {"msg": "Task deleted.", "type": "info"}
+                            st.rerun()
+
+                    # ── Per-task weekly comments expander ──────────────────────
+                    _wc_list = auth.get_task_comments_with_users(
+                        task_id=_t["id"], from_date=_cm_from_str, to_date=_cm_to_str)
+                    with st.expander(f"Weekly Comments ({len(_wc_list)})", expanded=False):
+                        if not _wc_list:
+                            st.info("No weekly comments in the selected period.")
+                        else:
+                            _wch = st.columns([1.2, 3.5, 2.0, 1.8])
+                            for _c, _l in zip(_wch, ["Week", "Comment", "Employee", "Submitted"]):
+                                _c.markdown(f'<div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;border-bottom:1px solid #E2E8F0;padding-bottom:4px">{_l}</div>', unsafe_allow_html=True)
+                            for _wc in _wc_list:
+                                _wr = st.columns([1.2, 3.5, 2.0, 1.8])
+                                _wk_d = date.fromisoformat(_wc["week_start"])
+                                _wk_end = _wk_d + timedelta(days=6)
+                                _wr[0].markdown(f'<span style="font-size:10px;color:#475569">{_wk_d.strftime("%d %b")}–{_wk_end.strftime("%d %b")}</span>', unsafe_allow_html=True)
+                                _wr[1].markdown(f'<span style="font-size:11px;color:#111827">{esc(_wc["comment"])}</span>', unsafe_allow_html=True)
+                                _wr[2].markdown(f'<span style="font-size:11px;color:#374151">{esc(_wc["user_name"])}</span>', unsafe_allow_html=True)
+                                _wr[3].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_wc["created_at"][:16])}</span>', unsafe_allow_html=True)
+
+                # ── All comments summary (collapsible) ────────────────────────
+                _all_comments = auth.get_task_comments_with_users(from_date=_cm_from_str, to_date=_cm_to_str)
+                with st.expander(f"All Weekly Comments Summary ({len(_all_comments)} entries)", expanded=False):
+                    if not _all_comments:
+                        st.info("No comments in the selected period.")
+                    else:
+                        _ach = st.columns([1.5, 2.5, 2.5, 1.8, 1.8])
+                        for _c, _l in zip(_ach, ["Week", "Task", "Employee", "Comment", "Submitted"]):
+                            _c.markdown(f'<div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;border-bottom:1px solid #E2E8F0;padding-bottom:4px">{_l}</div>', unsafe_allow_html=True)
+                        for _ac in _all_comments:
+                            _ar = st.columns([1.5, 2.5, 2.5, 1.8, 1.8])
+                            _wk_d = date.fromisoformat(_ac["week_start"])
+                            _wk_end = _wk_d + timedelta(days=6)
+                            _ar[0].markdown(f'<span style="font-size:10px;color:#475569">{_wk_d.strftime("%d %b")}–{_wk_end.strftime("%d %b")}</span>', unsafe_allow_html=True)
+                            _ar[1].markdown(f'<span style="font-size:11px;font-weight:600;color:#111827">{esc(_ac["task_title"])}</span>', unsafe_allow_html=True)
+                            _ar[2].markdown(f'<span style="font-size:11px;color:#374151">{esc(_ac["user_name"])}</span>', unsafe_allow_html=True)
+                            _ar[3].markdown(f'<span style="font-size:11px;color:#64748B">{esc(_ac["comment"][:80])}{"…" if len(_ac["comment"])>80 else ""}</span>', unsafe_allow_html=True)
+                            _ar[4].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_ac["created_at"][:16])}</span>', unsafe_allow_html=True)
+
+        if role == "lead":
+            _ltab_mine, _ltab_all = st.tabs(["My Tasks", "All Tasks"])
+            with _ltab_mine:
+                _render_my_tasks_panel(key_prefix="lt_")
+            with _ltab_all:
+                _render_all_tasks_panel()
         else:
-            _thdr = st.columns([2.2, 2.0, 1.6, 1.0, 1.5, 0.4])
-            for _col, _lbl in zip(_thdr, ["Task", "Assigned To", "Status", "Progress", "Due Date", ""]):
-                _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
-
-            for _t in _all_tasks:
-                _tc = st.columns([2.2, 2.0, 1.6, 1.0, 1.5, 0.4])
-                _tdesc = _t["description"]
-                _tdesc_short = (_tdesc[:50] + "…") if len(_tdesc) > 50 else _tdesc
-                _tc[0].markdown(
-                    f'<span style="font-size:12px;font-weight:600;color:#111827">{esc(_t["title"])}</span>'
-                    + (f'<br><span style="font-size:10px;color:#64748B">{esc(_tdesc_short)}</span>' if _tdesc_short else ""),
-                    unsafe_allow_html=True)
-                _tc[1].markdown(
-                    f'<span style="font-size:12px">{esc(_t["assigned_to"])}</span>'
-                    f'<br><span style="font-size:10px;color:#64748B">{esc(_t["assigned_to_email"])}</span>',
-                    unsafe_allow_html=True)
-                _tsc = _STAT_COLORS.get(_t["status"], "#94A3B8")
-                _tc[2].markdown(f'<span style="font-size:11px;font-weight:700;color:{_tsc}">{esc(_t["status"])}</span>', unsafe_allow_html=True)
-                _tpct = int(_t["progress"])
-                _tbar = "#10B981" if _tpct == 100 else "#3B82F6"
-                _tc[3].markdown(
-                    f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_tpct}%;background:{_tbar}"></div></div>'
-                    f'<div style="font-size:10px;color:#64748B">{_tpct}%</div>',
-                    unsafe_allow_html=True)
-                _tc[4].markdown(cell(_t["due_date"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
-                if _tc[5].button("Del", key=f"dt_{_t['id']}", help="Delete task"):
-                    auth.delete_task(_t["id"])
-                    st.session_state.toast = {"msg": "Task deleted.", "type": "info"}
-                    st.rerun()
+            _render_all_tasks_panel()
