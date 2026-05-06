@@ -7,6 +7,7 @@ import os
 import html
 import re
 from datetime import datetime, date, timedelta
+from jinja2 import Template
 import auth
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
@@ -97,7 +98,13 @@ STATUS MIX: R&M(10), UAT(6), Completed(8), In Progress(3), POC(14), Discontinued
 STATUSES: R&M (Run & Maintain), UAT (User Acceptance Testing), In Progress, Completed, PDD (Pre-Due Diligence), Discontinued, Internal POC, External POC, Important (high-priority flagged tasks needing immediate attention).
 TEAM: 16 members — Akhila Kovuri, Avinash, Chethan B N, Faiyaz, Mathan, Nandukanth, Narendra, Nischal, Radhika, Sharan, Shiv Shankar, Sivin, Sushma, Vikas, Chandru S, Rubika AE.
 ROI FORMULA: Hours Saved = Manual Hrs - Auto Hrs | Cost Saved = Hours Saved x Cost/Hr | ROI% = (Hours Saved / Manual Hrs) x 100
-Be concise, data-driven, use bullet points. Show ROI formula steps when calculating."""
+
+FORMATTING RULES (always follow):
+- When listing multiple projects, people, or items with attributes → use a markdown table with | column | headers |
+- When explaining steps, reasons, or a summary → use bullet points (- item)
+- Never write long prose paragraphs — always break into bullets
+- Show ROI formula steps when calculating
+- Be concise and data-driven"""
 
 # ── EXCEL HELPERS ─────────────────────────────────────────────────────────────
 def save_to_excel(df: pd.DataFrame):
@@ -261,27 +268,69 @@ def _inline_md(t: str) -> str:
     t = re.sub(r'`([^`]+)`', r'<code style="background:#F1F5F9;padding:1px 4px;border-radius:3px;font-size:11px;font-family:monospace">\1</code>', t)
     return t
 
+def _is_table_separator(line: str) -> bool:
+    return bool(re.match(r'^\|[\s\-|:]+\|$', line.strip()))
+
+def _parse_table_row(line: str) -> list:
+    cells = line.strip().strip('|').split('|')
+    return [c.strip() for c in cells]
+
 def md_to_html(text: str) -> str:
-    lines = html.escape(str(text)).split('\n')
-    out, in_list = [], False
-    for line in lines:
-        m = re.match(r'^(#{1,3}) (.+)$', line)
+    raw_lines = str(text).split('\n')
+    out, in_list, i = [], False, 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        # ── Markdown table detection ──────────────────────────────────────────
+        if (line.strip().startswith('|') and
+                i + 1 < len(raw_lines) and _is_table_separator(raw_lines[i + 1])):
+            if in_list: out.append('</ul>'); in_list = False
+            header_cells = _parse_table_row(line)
+            i += 2
+            body_rows = []
+            while i < len(raw_lines) and raw_lines[i].strip().startswith('|'):
+                body_rows.append(_parse_table_row(raw_lines[i]))
+                i += 1
+            th = ''.join(
+                f'<th style="padding:6px 12px;text-align:left;font-size:11px;'
+                f'font-weight:700;text-transform:uppercase;letter-spacing:.4px;'
+                f'color:#475569;background:#F1F5F9;border-bottom:2px solid #E2E8F0">'
+                f'{html.escape(c)}</th>' for c in header_cells)
+            rows_html = ''
+            for ri, row in enumerate(body_rows):
+                bg = '#ffffff' if ri % 2 == 0 else '#F8FAFC'
+                td = ''.join(
+                    f'<td style="padding:6px 12px;font-size:12px;color:#334155;'
+                    f'border-bottom:1px solid #F1F5F9">{_inline_md(html.escape(c))}</td>'
+                    for c in row)
+                rows_html += f'<tr style="background:{bg}">{td}</tr>'
+            out.append(
+                f'<div style="overflow-x:auto;margin:8px 0">'
+                f'<table style="width:100%;border-collapse:collapse;border:1px solid #E2E8F0;'
+                f'border-radius:8px;overflow:hidden;font-family:inherit">'
+                f'<thead><tr>{th}</tr></thead>'
+                f'<tbody>{rows_html}</tbody>'
+                f'</table></div>')
+            continue
+        # ── Everything else ───────────────────────────────────────────────────
+        esc = html.escape(line)
+        m = re.match(r'^(#{1,3}) (.+)$', esc)
         if m:
             if in_list: out.append('</ul>'); in_list = False
             sz = {1: '15px', 2: '14px', 3: '13px'}[len(m.group(1))]
             out.append(f'<div style="font-size:{sz};font-weight:700;margin:6px 0 2px">{_inline_md(m.group(2))}</div>')
-        elif re.match(r'^[-*] ', line):
+        elif re.match(r'^[-*] ', esc):
             if not in_list: out.append('<ul style="margin:4px 0;padding-left:18px">'); in_list = True
-            out.append(f'<li>{_inline_md(line[2:])}</li>')
-        elif re.match(r'^\d+\. ', line):
+            out.append(f'<li style="margin:2px 0">{_inline_md(esc[2:])}</li>')
+        elif re.match(r'^\d+\. ', esc):
             if not in_list: out.append('<ul style="margin:4px 0;padding-left:18px">'); in_list = True
-            out.append(f'<li>{_inline_md(re.sub(r"^\d+[.] ", "", line))}</li>')
-        elif not line.strip():
+            out.append(f'<li style="margin:2px 0">{_inline_md(re.sub(r"^\d+[.] ", "", esc))}</li>')
+        elif not esc.strip():
             if in_list: out.append('</ul>'); in_list = False
             out.append('<br>')
         else:
             if in_list: out.append('</ul>'); in_list = False
-            out.append(_inline_md(line) + '<br>')
+            out.append(_inline_md(esc) + '<br>')
+        i += 1
     if in_list:
         out.append('</ul>')
     return ''.join(out)
@@ -343,19 +392,14 @@ def call_claude(api_key, msgs, df):
         f"- {r['name']} | {r['client']} | {r['employee']} | {r['status']}"
         for _, r in df.iterrows())
     api_msgs = [{"role": m["role"], "content": m["content"]} for m in msgs[-12:]]
-    # Anthropic API requires conversation to start with a user turn
     while api_msgs and api_msgs[0]["role"] != "user":
         api_msgs = api_msgs[1:]
     if not api_msgs:
         return "Please ask me a question to get started!"
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=800,
-        system=[{
-            "type": "text",
-            "text": SYSTEM_PROMPT + proj_ctx,
-            "cache_control": {"type": "ephemeral"},
-        }],
+        model="claude-haiku-4-5-20251001",
+        max_tokens=500,
+        system=SYSTEM_PROMPT + proj_ctx,
         messages=api_msgs)
     return resp.content[0].text
 
@@ -406,12 +450,35 @@ section[data-testid="stSidebar"]{display:none!important}
 .prow:hover{background:#EFF6FF}
 
 /* ── Chat bubbles ── */
+@keyframes slideInRight{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}
+@keyframes slideInLeft{from{opacity:0;transform:translateX(-30px)}to{opacity:1;transform:translateX(0)}}
+@keyframes typingPulse{0%,80%,100%{transform:scale(0);opacity:.3}40%{transform:scale(1);opacity:1}}
+.chat-row{display:flex;align-items:flex-end;gap:8px;margin:8px 0}
+.chat-row.user-row{flex-direction:row-reverse}
+.chat-avatar{
+  width:30px;height:30px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:14px;flex-shrink:0;font-weight:700}
+.avatar-user{background:#DBEAFE;color:#1D4ED8}
+.avatar-bot{background:#DCFCE7;color:#16A34A}
 .chat-user{
   background:#EFF6FF;border:1px solid #BFDBFE;
-  border-radius:10px;padding:12px 16px;margin:6px 0;font-size:13px;line-height:1.6}
+  border-radius:16px 16px 4px 16px;padding:12px 16px;font-size:13px;line-height:1.6;
+  max-width:80%;animation:slideInRight .3s ease-out}
 .chat-bot{
   background:#F0FDF4;border:1px solid #BBF7D0;
-  border-radius:10px;padding:12px 16px;margin:6px 0;font-size:13px;line-height:1.6}
+  border-radius:16px 16px 16px 4px;padding:12px 16px;font-size:13px;line-height:1.6;
+  max-width:80%;animation:slideInLeft .3s ease-out}
+.typing-indicator{
+  display:flex;align-items:center;gap:10px;
+  background:#F0FDF4;border:1px solid #BBF7D0;
+  border-radius:16px 16px 16px 4px;padding:12px 16px;
+  width:fit-content;animation:slideInLeft .3s ease-out}
+.typing-dots{display:flex;gap:4px;align-items:center}
+.typing-dots span{
+  width:7px;height:7px;border-radius:50%;background:#16A34A;display:inline-block}
+.typing-dots span:nth-child(1){animation:typingPulse 1.2s infinite ease-in-out}
+.typing-dots span:nth-child(2){animation:typingPulse 1.2s infinite ease-in-out .2s}
+.typing-dots span:nth-child(3){animation:typingPulse 1.2s infinite ease-in-out .4s}
 
 /* ── ROI Banner ── */
 .roi-banner{
@@ -851,6 +918,30 @@ if st.session_state.confirm_delete and role == "admin":
     st.markdown("---")
 
 df = st.session_state.projects
+
+# ── Jinja2 chat templates ─────────────────────────────────────────────────────
+_TMPL_USER_MSG = Template("""
+<div class="chat-row user-row">
+  <div class="chat-avatar avatar-user">U</div>
+  <div class="chat-user">{{ content }}</div>
+</div>
+""")
+
+_TMPL_BOT_MSG = Template("""
+<div class="chat-row">
+  <div class="chat-avatar avatar-bot">Q</div>
+  <div class="chat-bot">{{ content }}</div>
+</div>
+""")
+
+_TMPL_TYPING = Template("""
+<div class="chat-row">
+  <div class="chat-avatar avatar-bot">Q</div>
+  <div class="typing-indicator">
+    <div class="typing-dots"><span></span><span></span><span></span></div>
+  </div>
+</div>
+""")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: DASHBOARD
@@ -1979,9 +2070,11 @@ elif st.session_state.active_tab == "agent" and role in ("admin", "lead", "manag
     else:
         # Chat history
         for msg in st.session_state.messages:
-            css = "chat-user" if msg["role"] == "user" else "chat-bot"
             content = md_to_html(msg["content"])
-            st.markdown(f'<div class="{css}">{content}</div>', unsafe_allow_html=True)
+            if msg["role"] == "user":
+                st.markdown(_TMPL_USER_MSG.render(content=content), unsafe_allow_html=True)
+            else:
+                st.markdown(_TMPL_BOT_MSG.render(content=content), unsafe_allow_html=True)
 
         # Quick question buttons
         st.markdown('<div style="margin:12px 0 6px;font-size:10px;font-weight:600;color:#94A3B8;text-transform:uppercase;letter-spacing:.6px">Quick Questions</div>', unsafe_allow_html=True)
@@ -1996,24 +2089,24 @@ elif st.session_state.active_tab == "agent" and role in ("admin", "lead", "manag
         for col, q in zip(qcols, quick_qs):
             if col.button(q, key=f"qq_{q[:14]}", use_container_width=True):
                 st.session_state.messages.append({"role":"user","content":q})
-                with st.spinner("Processing..."):
-                    try:
-                        reply = call_claude(api_key, st.session_state.messages, df)
-                        st.session_state.messages.append({"role":"assistant","content":reply})
-                    except Exception as e:
-                        st.session_state.messages.append({"role":"assistant","content":f"Error: {e}"})
+                st.markdown(_TMPL_TYPING.render(), unsafe_allow_html=True)
+                try:
+                    reply = call_claude(api_key, st.session_state.messages, df)
+                    st.session_state.messages.append({"role":"assistant","content":reply})
+                except Exception as e:
+                    st.session_state.messages.append({"role":"assistant","content":f"Error: {e}"})
                 st.rerun()
 
         # Chat input
         user_input = st.chat_input("Ask anything about projects, team, ROI…")
         if user_input:
             st.session_state.messages.append({"role":"user","content":user_input})
-            with st.spinner("Processing..."):
-                try:
-                    reply = call_claude(api_key, st.session_state.messages, df)
-                    st.session_state.messages.append({"role":"assistant","content":reply})
-                except Exception as e:
-                    st.session_state.messages.append({"role":"assistant","content":f"Error: {e}"})
+            st.markdown(_TMPL_TYPING.render(), unsafe_allow_html=True)
+            try:
+                reply = call_claude(api_key, st.session_state.messages, df)
+                st.session_state.messages.append({"role":"assistant","content":reply})
+            except Exception as e:
+                st.session_state.messages.append({"role":"assistant","content":f"Error: {e}"})
             st.rerun()
 
         if st.button("Clear Chat", key="clear_chat"):
@@ -2427,9 +2520,10 @@ elif st.session_state.active_tab == "tasks":
                     _emp_sel   = _ta2.selectbox("Assign To *", _emp_opts, key="nt_emp",
                                                 help="Employees and Leads are listed here.")
                     _nt_desc   = st.text_area("Description (optional)", key="nt_desc", height=80)
-                    _ta3, _ta4 = st.columns(2)
+                    _ta3, _ta4, _ta5 = st.columns(3)
                     _nt_start_dt = _ta3.date_input("Start Date (optional)", value=None, key="nt_start_dt", format="YYYY-MM-DD")
                     _nt_due_dt   = _ta4.date_input("Due Date (optional)", value=None, key="nt_due_dt", format="YYYY-MM-DD")
+                    _ta5.text_input("Assigned By", value=cu["name"], disabled=True, key="nt_assigned_by")
                     _nt_start = _nt_start_dt.strftime("%Y-%m-%d") if _nt_start_dt else ""
                     _nt_due   = _nt_due_dt.strftime("%Y-%m-%d") if _nt_due_dt else ""
                     if st.button("Assign Task", type="primary", key="assign_task_btn"):
@@ -2443,7 +2537,10 @@ elif st.session_state.active_tab == "tasks":
                             st.rerun()
 
             _all_tasks = auth.get_all_tasks()
-            st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(_all_tasks)}</b> total tasks</p>', unsafe_allow_html=True)
+            st.markdown(
+                f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px">'
+                f'<b>{len(_all_tasks)}</b> total tasks</p>',
+                unsafe_allow_html=True)
 
             # ── Comment date-range filter ──────────────────────────────────────
             with st.container(border=True):
@@ -2463,57 +2560,101 @@ elif st.session_state.active_tab == "tasks":
             if not _all_tasks:
                 st.info("No tasks yet. Use the form above to assign tasks to employees.")
             else:
-                _thdr = st.columns([2.2, 2.0, 1.6, 1.0, 1.2, 1.2, 0.4])
-                for _col, _lbl in zip(_thdr, ["Task", "Assigned To", "Status", "Progress", "Start Date", "Due Date", ""]):
-                    _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
+                def _render_task_rows(tasks, tab_sfx):
+                    if not tasks:
+                        st.info("No tasks in this category.")
+                        return
+                    _thdr = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4])
+                    for _col, _lbl in zip(_thdr, ["Task", "Assigned To", "Assigned By", "Status", "Progress", "Start Date", "Due Date", ""]):
+                        _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
 
-                for _t in _all_tasks:
-                    _tc = st.columns([2.2, 2.0, 1.6, 1.0, 1.2, 1.2, 0.4])
-                    _tdesc = _t["description"]
-                    _tdesc_short = (_tdesc[:50] + "…") if len(_tdesc) > 50 else _tdesc
-                    _tc[0].markdown(
-                        f'<span style="font-size:12px;font-weight:600;color:#111827">{esc(_t["title"])}</span>'
-                        + (f'<br><span style="font-size:10px;color:#64748B">{esc(_tdesc_short)}</span>' if _tdesc_short else ""),
-                        unsafe_allow_html=True)
-                    _tc[1].markdown(
-                        f'<span style="font-size:12px">{esc(_t["assigned_to"])}</span>'
-                        f'<br><span style="font-size:10px;color:#64748B">{esc(_t["assigned_to_email"])}</span>',
-                        unsafe_allow_html=True)
-                    _tsc = _STAT_COLORS.get(_t["status"], "#94A3B8")
-                    _tc[2].markdown(f'<span style="font-size:11px;font-weight:700;color:{_tsc}">{esc(_t["status"])}</span>', unsafe_allow_html=True)
-                    _tpct = int(_t["progress"])
-                    _tbar = "#10B981" if _tpct == 100 else "#3B82F6"
-                    _tc[3].markdown(
-                        f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_tpct}%;background:{_tbar}"></div></div>'
-                        f'<div style="font-size:10px;color:#64748B">{_tpct}%</div>',
-                        unsafe_allow_html=True)
-                    _tc[4].markdown(cell(_t.get("start_date") or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
-                    _tc[5].markdown(cell(_t["due_date"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
-                    with _tc[6]:
-                        st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
-                        if st.button("🗑", key=f"dt_{_t['id']}", help="Delete task", use_container_width=True):
-                            auth.delete_task(_t["id"])
-                            st.session_state.toast = {"msg": "Task deleted.", "type": "info"}
-                            st.rerun()
+                    for _t in tasks:
+                        _tc = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4])
+                        _tdesc = _t["description"]
+                        _tdesc_short = (_tdesc[:50] + "…") if len(_tdesc) > 50 else _tdesc
+                        _tc[0].markdown(
+                            f'<span style="font-size:12px;font-weight:600;color:#111827">{esc(_t["title"])}</span>'
+                            + (f'<br><span style="font-size:10px;color:#64748B">{esc(_tdesc_short)}</span>' if _tdesc_short else ""),
+                            unsafe_allow_html=True)
+                        _tc[1].markdown(
+                            f'<span style="font-size:12px">{esc(_t["assigned_to"])}</span>'
+                            f'<br><span style="font-size:10px;color:#64748B">{esc(_t["assigned_to_email"])}</span>',
+                            unsafe_allow_html=True)
+                        _tc[2].markdown(
+                            f'<span style="font-size:12px;color:#374151">{esc(_t["assigned_by"])}</span>',
+                            unsafe_allow_html=True)
+                        _tsc = _STAT_COLORS.get(_t["status"], "#94A3B8")
+                        _tc[3].markdown(f'<span style="font-size:11px;font-weight:700;color:{_tsc}">{esc(_t["status"])}</span>', unsafe_allow_html=True)
+                        _tpct = int(_t["progress"])
+                        _tbar = "#10B981" if _tpct == 100 else "#3B82F6"
+                        _tc[4].markdown(
+                            f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_tpct}%;background:{_tbar}"></div></div>'
+                            f'<div style="font-size:10px;color:#64748B">{_tpct}%</div>',
+                            unsafe_allow_html=True)
+                        _tc[5].markdown(cell(_t.get("start_date") or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                        _tc[6].markdown(cell(_t["due_date"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                        with _tc[7]:
+                            st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                            if st.button("🗑", key=f"dt_{tab_sfx}_{_t['id']}", help="Delete task", use_container_width=True):
+                                auth.delete_task(_t["id"])
+                                st.session_state.toast = {"msg": "Task deleted.", "type": "info"}
+                                st.rerun()
 
-                    # ── Per-task weekly comments expander ──────────────────────
-                    _wc_list = auth.get_task_comments_with_users(
-                        task_id=_t["id"], from_date=_cm_from_str, to_date=_cm_to_str)
-                    with st.expander(f"Weekly Comments ({len(_wc_list)})", expanded=False):
-                        if not _wc_list:
-                            st.info("No weekly comments in the selected period.")
-                        else:
-                            _wch = st.columns([1.2, 3.5, 2.0, 1.8])
-                            for _c, _l in zip(_wch, ["Week", "Comment", "Employee", "Submitted"]):
-                                _c.markdown(f'<div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;border-bottom:1px solid #E2E8F0;padding-bottom:4px">{_l}</div>', unsafe_allow_html=True)
-                            for _wc in _wc_list:
-                                _wr = st.columns([1.2, 3.5, 2.0, 1.8])
-                                _wk_d = date.fromisoformat(_wc["week_start"])
-                                _wk_end = _wk_d + timedelta(days=6)
-                                _wr[0].markdown(f'<span style="font-size:10px;color:#475569">{_wk_d.strftime("%d %b")}–{_wk_end.strftime("%d %b")}</span>', unsafe_allow_html=True)
-                                _wr[1].markdown(f'<span style="font-size:11px;color:#111827">{esc(_wc["comment"])}</span>', unsafe_allow_html=True)
-                                _wr[2].markdown(f'<span style="font-size:11px;color:#374151">{esc(_wc["user_name"])}</span>', unsafe_allow_html=True)
-                                _wr[3].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_wc["created_at"][:16])}</span>', unsafe_allow_html=True)
+                        # ── Per-task weekly comments expander ──────────────────
+                        _wc_list = auth.get_task_comments_with_users(
+                            task_id=_t["id"], from_date=_cm_from_str, to_date=_cm_to_str)
+                        with st.expander(f"Weekly Comments ({len(_wc_list)})", expanded=False):
+                            if not _wc_list:
+                                st.info("No weekly comments in the selected period.")
+                            else:
+                                _wch = st.columns([1.2, 3.5, 2.0, 1.8])
+                                for _c, _l in zip(_wch, ["Week", "Comment", "Employee", "Submitted"]):
+                                    _c.markdown(f'<div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;border-bottom:1px solid #E2E8F0;padding-bottom:4px">{_l}</div>', unsafe_allow_html=True)
+                                for _wc in _wc_list:
+                                    _wr = st.columns([1.2, 3.5, 2.0, 1.8])
+                                    _wk_d = date.fromisoformat(_wc["week_start"])
+                                    _wk_end = _wk_d + timedelta(days=6)
+                                    _wr[0].markdown(f'<span style="font-size:10px;color:#475569">{_wk_d.strftime("%d %b")}–{_wk_end.strftime("%d %b")}</span>', unsafe_allow_html=True)
+                                    _wr[1].markdown(f'<span style="font-size:11px;color:#111827">{esc(_wc["comment"])}</span>', unsafe_allow_html=True)
+                                    _wr[2].markdown(f'<span style="font-size:11px;color:#374151">{esc(_wc["user_name"])}</span>', unsafe_allow_html=True)
+                                    _wr[3].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_wc["created_at"][:16])}</span>', unsafe_allow_html=True)
+
+                def _render_tab_with_filters(base_tasks, tab_sfx):
+                    _emp_names = sorted({t["assigned_to"] for t in base_tasks})
+                    _ff1, _ff2 = st.columns([1.5, 2.5])
+                    _emp_f  = _ff1.selectbox("Employee", ["All"] + _emp_names, key=f"emp_f_{tab_sfx}")
+                    _name_f = _ff2.text_input("Task name", placeholder="Filter by task title…", key=f"name_f_{tab_sfx}")
+                    _visible = list(base_tasks)
+                    if _emp_f != "All":
+                        _visible = [t for t in _visible if t["assigned_to"] == _emp_f]
+                    if _name_f.strip():
+                        _nq = _name_f.strip().lower()
+                        _visible = [t for t in _visible if _nq in t["title"].lower()]
+                    st.markdown(
+                        f'<p style="color:#64748B;font-size:11px;margin:4px 0 8px">'
+                        f'<b>{len(_visible)}</b> task(s)</p>',
+                        unsafe_allow_html=True)
+                    _render_task_rows(_visible, tab_sfx)
+
+                # ── Status sub-tabs ────────────────────────────────────────────
+                _ip_tasks   = [t for t in _all_tasks if t["status"] == "In Progress"]
+                _comp_tasks = [t for t in _all_tasks if t["status"] == "Completed"]
+                _hold_tasks = [t for t in _all_tasks if t["status"] == "On Hold"]
+
+                _stab_all, _stab_ip, _stab_comp, _stab_hold = st.tabs([
+                    f"All ({len(_all_tasks)})",
+                    f"In Progress ({len(_ip_tasks)})",
+                    f"Completed ({len(_comp_tasks)})",
+                    f"On Hold ({len(_hold_tasks)})",
+                ])
+                with _stab_all:
+                    _render_tab_with_filters(_all_tasks, "all")
+                with _stab_ip:
+                    _render_tab_with_filters(_ip_tasks, "ip")
+                with _stab_comp:
+                    _render_tab_with_filters(_comp_tasks, "comp")
+                with _stab_hold:
+                    _render_tab_with_filters(_hold_tasks, "hold")
 
                 # ── All comments summary (collapsible) ────────────────────────
                 _all_comments = auth.get_task_comments_with_users(from_date=_cm_from_str, to_date=_cm_to_str)
