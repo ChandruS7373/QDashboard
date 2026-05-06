@@ -2554,7 +2554,7 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
             placeholder="Enter password or App Password",
             key="settings_outlook_pwd",
             help="If MFA is enabled, generate an App Password in your Microsoft account settings.")
-        _sc3, _sc4 = st.columns([1, 3])
+        _sc3, _sc4, _sc5 = st.columns([1, 1, 2])
         if _sc3.button("Save Settings", type="primary", key="settings_save_outlook"):
             if not _s_email.strip() or not _s_pwd.strip():
                 st.error("Both email and password are required.")
@@ -2562,7 +2562,21 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
                 auth.save_user_email_settings(cu["id"], _s_email.strip(), _s_pwd.strip())
                 st.session_state.toast = {"msg": "Your Outlook settings saved!", "type": "success"}
                 st.rerun()
-        if _sc4.button("Clear / Disable Email", key="settings_clear_outlook"):
+        if _sc4.button("Test Connection", key="settings_test_outlook"):
+            if not _s_email.strip() or not _s_pwd.strip():
+                st.error("Enter email and password first.")
+            else:
+                import email_utils as _eu
+                _test_ok, _test_err = _eu._smtp_send(
+                    _s_email.strip(), _s_pwd.strip(),
+                    _s_email.strip(),
+                    "Qualesce – SMTP Test",
+                    "<p>Your Outlook connection is working correctly.</p>")
+                if _test_ok:
+                    st.success("Connection successful! Test email sent to your inbox.")
+                else:
+                    st.error(f"Connection failed: {_test_err}")
+        if _sc5.button("Clear / Disable Email", key="settings_clear_outlook"):
             auth.save_user_email_settings(cu["id"], "", "")
             st.session_state.toast = {"msg": "Email settings cleared.", "type": "info"}
             st.rerun()
@@ -2767,14 +2781,17 @@ elif st.session_state.active_tab == "tasks":
                             _sender_cfg = auth.get_user_email_settings(cu["id"])
                             if not _sender_cfg["outlook_email"]:
                                 _sender_cfg = auth.get_email_settings()
-                            email_utils.send_task_assigned_email(
+                            _mail_ok, _mail_err = email_utils.send_task_assigned_email(
                                 _sel_emp["email"], _sel_emp["name"],
                                 _nt_title, cu["name"], _nt_due.strip(),
                                 sender_email=_sender_cfg["outlook_email"],
                                 sender_password=_sender_cfg["outlook_password"])
                             save_to_excel(st.session_state.projects)
-                            st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
-                            st.rerun()
+                            if not _mail_ok and _mail_err:
+                                st.warning(f"Task assigned but email failed: {_mail_err}. Check your Outlook settings in the Settings tab.")
+                            else:
+                                st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
+                                st.rerun()
 
             _all_tasks = auth.get_all_tasks()
             st.markdown(
