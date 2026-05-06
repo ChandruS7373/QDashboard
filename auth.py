@@ -384,6 +384,62 @@ def get_all_tasks_asc() -> list:
     return [_task(r) for r in rows]
 
 
+def sync_tasks_from_excel(excel_path: str):
+    """Import tasks from the Excel Tasks sheet into SQLite on startup.
+    Skips rows where assigned_to or assigned_by email doesn't match a DB user.
+    Existing task IDs are updated; new rows are inserted."""
+    if not excel_path:
+        return
+    try:
+        import pandas as pd
+        df = pd.read_excel(excel_path, sheet_name="Tasks", dtype=str, engine="openpyxl").fillna("")
+    except Exception:
+        return
+    if df.empty:
+        return
+    conn = get_conn()
+    c = conn.cursor()
+    # Build email→id lookup for users
+    c.execute("SELECT id, email FROM users")
+    email_map = {row[1].strip().lower(): row[0] for row in c.fetchall()}
+    for _, row in df.iterrows():
+        try:
+            task_id  = int(float(row.get("id", 0) or 0))
+            title    = str(row.get("title", "")).strip()
+            if not task_id or not title:
+                continue
+            desc     = str(row.get("description", "")).strip()
+            status   = str(row.get("status", "Not Started")).strip()
+            progress = int(float(row.get("progress", 0) or 0))
+            due_date = str(row.get("due_date", "")).strip()
+            start_date = str(row.get("start_date", "")).strip()
+            comment  = str(row.get("comment", "")).strip()
+            created_at = str(row.get("created_at", _now())).strip() or _now()
+            updated_at = str(row.get("updated_at", _now())).strip() or _now()
+            to_email  = str(row.get("assigned_to_email", "")).strip().lower()
+            by_email  = str(row.get("assigned_by_email", "")).strip().lower()
+            to_id  = email_map.get(to_email)
+            by_id  = email_map.get(by_email)
+            if not to_id or not by_id:
+                continue
+            c.execute("SELECT id FROM tasks WHERE id=?", (task_id,))
+            if c.fetchone():
+                c.execute(
+                    "UPDATE tasks SET title=?,description=?,assigned_to_id=?,assigned_by_id=?,"
+                    "status=?,progress=?,start_date=?,due_date=?,comment=?,updated_at=? WHERE id=?",
+                    (title, desc, to_id, by_id, status, progress, start_date, due_date, comment, updated_at, task_id))
+            else:
+                c.execute(
+                    "INSERT INTO tasks (id,title,description,assigned_to_id,assigned_by_id,"
+                    "status,progress,start_date,due_date,comment,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (task_id, title, desc, to_id, by_id, status, progress, start_date, due_date, comment, created_at, updated_at))
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+
+
 def get_user_tasks(user_id: int) -> list:
     conn = get_conn()
     c = conn.cursor()

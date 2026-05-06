@@ -108,6 +108,40 @@ FORMATTING RULES (always follow):
 - Be concise and data-driven"""
 
 # ── EXCEL HELPERS ─────────────────────────────────────────────────────────────
+def build_excel_bytes(df: pd.DataFrame) -> bytes:
+    """Generate Excel file in memory from live DB — always up to date."""
+    import io
+    out = df.copy()
+    for col in EXCEL_COLS:
+        if col not in out.columns:
+            out[col] = ""
+    _poc_statuses_excel = {"Presales", "Internal POC", "External POC"}
+    presales_df = out[out["status"].str.strip().isin(_poc_statuses_excel)][EXCEL_COLS].reset_index(drop=True)
+    license_records = auth.get_all_licenses()
+    license_df = pd.DataFrame(license_records) if license_records else pd.DataFrame(
+        columns=["id","tool_name","no_of_licenses","start_date","end_date","created_at"])
+    user_records = auth.get_all_users()
+    user_df = pd.DataFrame(user_records, columns=["id","name","email","role","is_active","created_at"]) \
+              if user_records else pd.DataFrame(columns=["id","name","email","role","is_active","created_at"])
+    sold_records = auth.get_all_sold_licenses()
+    sold_df = pd.DataFrame(sold_records) if sold_records else pd.DataFrame(
+        columns=["id","tool_name","client","no_of_licenses","start_date","end_date","notes","created_at"])
+    task_records = auth.get_all_tasks_asc()
+    task_df = pd.DataFrame(task_records) if task_records else pd.DataFrame(
+        columns=["id","title","description","status","progress","due_date","start_date",
+                 "created_at","updated_at","comment","assigned_to","assigned_to_email",
+                 "assigned_by","assigned_by_email"])
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        out[EXCEL_COLS].to_excel(writer, sheet_name="Project Details", index=False)
+        presales_df.to_excel(writer, sheet_name="Presales_POC", index=False)
+        license_df.to_excel(writer, sheet_name="License", index=False)
+        sold_df.to_excel(writer, sheet_name="Sold_License", index=False)
+        user_df.to_excel(writer, sheet_name="Users", index=False)
+        task_df.to_excel(writer, sheet_name="Tasks", index=False)
+    return buf.getvalue()
+
+
 def save_to_excel(df: pd.DataFrame):
     import tempfile, shutil
     out = df.copy()
@@ -347,6 +381,10 @@ def md_to_html(text: str) -> str:
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 if "projects" not in st.session_state:
     st.session_state.projects = load_from_excel()
+    # Import tasks from Excel Tasks sheet into DB on first load
+    if "excel_tasks_imported" not in st.session_state:
+        auth.sync_tasks_from_excel(EXCEL_PATH)
+        st.session_state.excel_tasks_imported = True
 if "is_active" not in st.session_state.projects.columns:
     st.session_state.projects["is_active"] = True
 if "proj_type" not in st.session_state.projects.columns:
@@ -820,9 +858,9 @@ if st.session_state.active_tab not in [t[0] for t in _tab_defs]:
 
 _n = len(_tab_defs)
 if role == "admin":
-    nav_c = st.columns([1] * _n + [0.9, 0.6, 0.55])
+    nav_c = st.columns([1] * _n + [0.9, 0.6, 0.7, 0.55])
 elif role in ("lead", "manager"):
-    nav_c = st.columns([1] * _n + [0.6, 0.55])
+    nav_c = st.columns([1] * _n + [0.6, 0.7, 0.55])
 else:
     nav_c = st.columns([1] * _n + [0.55])
 
@@ -846,7 +884,12 @@ if role == "admin":
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
         st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
-    if nav_c[_n + 2].button("Logout", use_container_width=True):
+    nav_c[_n + 2].download_button(
+        "Download", data=build_excel_bytes(st.session_state.projects),
+        file_name="qualesce_data.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True)
+    if nav_c[_n + 3].button("Logout", use_container_width=True):
         st.session_state.current_user = None
         st.rerun()
 elif role in ("lead", "manager"):
@@ -857,6 +900,11 @@ elif role in ("lead", "manager"):
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
         st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
+    nav_c[_n + 1].download_button(
+        "Download", data=build_excel_bytes(st.session_state.projects),
+        file_name="qualesce_data.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True)
     if nav_c[_n + 1].button("Logout", use_container_width=True):
         st.session_state.current_user = None
         st.rerun()
