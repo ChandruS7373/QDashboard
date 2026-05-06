@@ -756,7 +756,7 @@ elif role == "sales":
 elif role in ("lead", "manager"):
     _tab_defs = [("dashboard", "Dashboard"), ("projects", "Projects"),
                  ("presales", "Presales/POC"), ("license", "License"),
-                 ("agent", "AI Agent"), ("tasks", "Tasks"), ("settings", "Settings")]
+                 ("agent", "AI Agent"), ("tasks", "Tasks")]
 else:
     _tab_defs = [("dashboard", "Dashboard"), ("projects", "Projects"),
                  ("presales", "Presales/POC"), ("license", "License"),

@@ -131,7 +131,17 @@ def send_task_assigned_email(emp_email: str, emp_name: str, task_title: str,
 </div>
 """
     if sender_email and sender_password:
-        return _smtp_send(sender_email, sender_password, emp_email, subject, body)
+        ok, err = _smtp_send(sender_email, sender_password, emp_email, subject, body)
+        if ok:
+            return ok, err
+        # SMTP AUTH disabled for this account — fall back to global credentials
+        # Reply-To is set to the intended sender so employee replies reach them directly
+        global_sender, global_pwd = _smtp_creds()
+        if global_sender and global_pwd and global_sender != sender_email:
+            return _smtp_send(global_sender, global_pwd, emp_email, subject, body,
+                              reply_to=sender_email,
+                              display_name=f"{assigned_by}")
+        return ok, err
     return send_email(emp_email, subject, body)
 
 
