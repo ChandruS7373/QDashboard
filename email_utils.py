@@ -6,7 +6,7 @@ from email.mime.text import MIMEText
 
 
 def _smtp_creds():
-    # 1. Try database settings (configured via the admin UI)
+    # 1. Global DB settings (configured via admin Users tab)
     try:
         import auth as _auth
         cfg = _auth.get_email_settings()
@@ -14,7 +14,7 @@ def _smtp_creds():
             return cfg["outlook_email"], cfg["outlook_password"]
     except Exception:
         pass
-    # 2. Fall back to secrets.toml / environment variable
+    # 2. Global secrets.toml / env var
     try:
         import streamlit as st
         email = st.secrets.get("OUTLOOK_EMAIL", "")
@@ -26,11 +26,45 @@ def _smtp_creds():
     return os.environ.get("OUTLOOK_EMAIL", ""), os.environ.get("OUTLOOK_PASSWORD", "")
 
 
-def _smtp_send(sender: str, password: str, to_email: str, subject: str, html_body: str) -> tuple[bool, str]:
+def _smtp_creds_for_role(role: str, user_id: int = 0) -> tuple[str, str]:
+    """Return (email, password) for a specific role/user, with fallback chain:
+    1. Per-user DB  →  2. Role secrets  →  3. Global DB  →  4. Global secrets"""
+    # 1. Per-user DB settings
+    try:
+        import auth as _auth
+        cfg = _auth.get_user_email_settings(user_id)
+        if cfg["outlook_email"] and cfg["outlook_password"]:
+            return cfg["outlook_email"], cfg["outlook_password"]
+    except Exception:
+        pass
+    # 2. Role-specific secrets (LEAD_OUTLOOK_EMAIL / MANAGER_OUTLOOK_EMAIL)
+    try:
+        import streamlit as st
+        key = role.upper()
+        r_email = st.secrets.get(f"{key}_OUTLOOK_EMAIL", "")
+        r_pwd   = st.secrets.get(f"{key}_OUTLOOK_PASSWORD", "")
+        if r_email and r_pwd:
+            return r_email, r_pwd
+    except Exception:
+        pass
+    # 3. Role-specific env vars
+    key = role.upper()
+    r_email = os.environ.get(f"{key}_OUTLOOK_EMAIL", "")
+    r_pwd   = os.environ.get(f"{key}_OUTLOOK_PASSWORD", "")
+    if r_email and r_pwd:
+        return r_email, r_pwd
+    # 4. Fall back to global settings
+    return _smtp_creds()
+
+
+def _smtp_send(sender: str, password: str, to_email: str, subject: str, html_body: str,
+               reply_to: str = "", display_name: str = "") -> tuple[bool, str]:
     msg = MIMEMultipart("alternative")
-    msg["From"] = sender
+    msg["From"] = f"{display_name} <{sender}>" if display_name else sender
     msg["To"] = to_email
     msg["Subject"] = subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.attach(MIMEText(html_body, "html"))
     try:
         with smtplib.SMTP("smtp.office365.com", 587) as server:

@@ -2756,14 +2756,12 @@ elif st.session_state.active_tab == "tasks":
         def _render_all_tasks_panel():
             with st.expander("Assign New Task", expanded=False):
                 # Show which email will be used to send the task notification
-                _preview_cfg = auth.get_user_email_settings(cu["id"])
-                if not _preview_cfg["outlook_email"]:
-                    _preview_cfg = auth.get_email_settings()
-                if _preview_cfg["outlook_email"]:
+                _preview_email, _ = email_utils._smtp_creds_for_role(role, cu["id"])
+                if _preview_email:
                     st.markdown(
                         f'<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;'
                         f'padding:8px 14px;font-size:11px;color:#1D4ED8;margin-bottom:10px">'
-                        f'Notification email will be sent from: <b>{_preview_cfg["outlook_email"]}</b></div>',
+                        f'Notification email will be sent from: <b>{_preview_email}</b></div>',
                         unsafe_allow_html=True)
                 else:
                     st.markdown(
@@ -2795,14 +2793,12 @@ elif st.session_state.active_tab == "tasks":
                             _sel_idx = _emp_opts.index(_emp_sel)
                             _sel_emp = _assignable[_sel_idx]
                             auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
-                            _sender_cfg = auth.get_user_email_settings(cu["id"])
-                            if not _sender_cfg["outlook_email"]:
-                                _sender_cfg = auth.get_email_settings()
+                            _s_email, _s_pwd = email_utils._smtp_creds_for_role(role, cu["id"])
                             _mail_ok, _mail_err = email_utils.send_task_assigned_email(
                                 _sel_emp["email"], _sel_emp["name"],
                                 _nt_title, cu["name"], _nt_due.strip(),
-                                sender_email=_sender_cfg["outlook_email"],
-                                sender_password=_sender_cfg["outlook_password"])
+                                sender_email=_s_email,
+                                sender_password=_s_pwd)
                             save_to_excel(st.session_state.projects)
                             if not _mail_ok and _mail_err:
                                 st.warning(f"Task assigned but email failed: {_mail_err}. Check your Outlook settings in the Settings tab.")
