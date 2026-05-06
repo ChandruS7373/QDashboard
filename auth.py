@@ -273,6 +273,44 @@ def save_email_settings(outlook_email: str, outlook_password: str):
     conn.close()
 
 
+# ── PER-USER EMAIL SETTINGS ────────────────────────────────────────────────────
+
+def _ensure_user_email_settings(c):
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS user_email_settings (
+            user_id INTEGER PRIMARY KEY,
+            outlook_email TEXT NOT NULL DEFAULT '',
+            outlook_password TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
+
+def get_user_email_settings(user_id: int) -> dict:
+    conn = get_conn()
+    c = conn.cursor()
+    _ensure_user_email_settings(c)
+    conn.commit()
+    c.execute("SELECT outlook_email, outlook_password, updated_at FROM user_email_settings WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {"outlook_email": row[0], "outlook_password": row[1], "updated_at": row[2]}
+    return {"outlook_email": "", "outlook_password": "", "updated_at": ""}
+
+
+def save_user_email_settings(user_id: int, outlook_email: str, outlook_password: str):
+    conn = get_conn()
+    c = conn.cursor()
+    _ensure_user_email_settings(c)
+    c.execute(
+        "INSERT OR REPLACE INTO user_email_settings (user_id, outlook_email, outlook_password, updated_at) VALUES (?,?,?,?)",
+        (user_id, outlook_email.strip().lower(), outlook_password, _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
 def set_active(user_id: int, active: bool):
     conn = get_conn()
     c = conn.cursor()
@@ -361,6 +399,17 @@ def delete_task(task_id: int):
     conn = get_conn()
     c = conn.cursor()
     c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_task_meta(task_id: int, title: str, description: str, start_date: str, due_date: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE tasks SET title=?, description=?, start_date=?, due_date=?, updated_at=? WHERE id=?",
+        (title.strip(), description.strip(), start_date, due_date, _now(), task_id),
+    )
     conn.commit()
     conn.close()
 

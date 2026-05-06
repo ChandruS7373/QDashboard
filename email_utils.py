@@ -26,10 +26,7 @@ def _smtp_creds():
     return os.environ.get("OUTLOOK_EMAIL", ""), os.environ.get("OUTLOOK_PASSWORD", "")
 
 
-def send_email(to_email: str, subject: str, html_body: str) -> tuple[bool, str]:
-    sender, password = _smtp_creds()
-    if not sender or not password:
-        return False, "SMTP credentials not configured in secrets.toml"
+def _smtp_send(sender: str, password: str, to_email: str, subject: str, html_body: str) -> tuple[bool, str]:
     msg = MIMEMultipart("alternative")
     msg["From"] = sender
     msg["To"] = to_email
@@ -44,6 +41,13 @@ def send_email(to_email: str, subject: str, html_body: str) -> tuple[bool, str]:
         return True, ""
     except Exception as e:
         return False, str(e)
+
+
+def send_email(to_email: str, subject: str, html_body: str) -> tuple[bool, str]:
+    sender, password = _smtp_creds()
+    if not sender or not password:
+        return False, "SMTP credentials not configured in secrets.toml"
+    return _smtp_send(sender, password, to_email, subject, html_body)
 
 
 def generate_otp() -> str:
@@ -72,7 +76,8 @@ def send_otp_email(to_email: str, user_name: str, otp: str) -> tuple[bool, str]:
 
 
 def send_task_assigned_email(emp_email: str, emp_name: str, task_title: str,
-                              assigned_by: str, due_date: str) -> tuple[bool, str]:
+                              assigned_by: str, due_date: str,
+                              sender_email: str = "", sender_password: str = "") -> tuple[bool, str]:
     subject = f"Qualesce – New Task Assigned: {task_title}"
     due_line = f"Due: <b>{due_date}</b>" if due_date else "No due date set"
     body = f"""
@@ -91,6 +96,8 @@ def send_task_assigned_email(emp_email: str, emp_name: str, task_title: str,
   </p>
 </div>
 """
+    if sender_email and sender_password:
+        return _smtp_send(sender_email, sender_password, emp_email, subject, body)
     return send_email(emp_email, subject, body)
 
 

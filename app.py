@@ -127,6 +127,12 @@ def save_to_excel(df: pd.DataFrame):
     sold_df = pd.DataFrame(sold_records) if sold_records else pd.DataFrame(
         columns=["id","tool_name","client","no_of_licenses","start_date","end_date","notes","created_at"]
     )
+    task_records = auth.get_all_tasks()
+    task_df = pd.DataFrame(task_records) if task_records else pd.DataFrame(
+        columns=["id","title","description","status","progress","due_date","start_date",
+                 "created_at","updated_at","comment","assigned_to","assigned_to_email",
+                 "assigned_by","assigned_by_email"]
+    )
     # Write to a temp file first, then replace — avoids PermissionError when Excel has the file open
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", dir=os.path.dirname(EXCEL_PATH))
     os.close(tmp_fd)
@@ -137,6 +143,7 @@ def save_to_excel(df: pd.DataFrame):
             license_df.to_excel(writer, sheet_name="License", index=False)
             sold_df.to_excel(writer, sheet_name="Sold_License", index=False)
             user_df.to_excel(writer, sheet_name="Users", index=False)
+            task_df.to_excel(writer, sheet_name="Tasks", index=False)
         shutil.move(tmp_path, EXCEL_PATH)
     except PermissionError:
         # projects.xlsx is open in Excel — keep temp file as fallback and surface a clear warning
@@ -2498,11 +2505,12 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
     st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Configure integrations and notifications</p>', unsafe_allow_html=True)
 
     with st.expander("Outlook Email Settings", expanded=True):
-        _cfg = auth.get_email_settings()
+        _cfg = auth.get_user_email_settings(cu["id"])
         st.markdown(
             '<p style="color:#64748B;font-size:12px;margin-bottom:10px">'
-            'Configure the Outlook / Office 365 account used to send password reset codes '
-            'and task notifications. Credentials are stored in the local database.</p>',
+            'Configure <b>your</b> Outlook / Office 365 account. Task assignment emails '
+            'will be sent from this address to the employee you assign tasks to. '
+            'Credentials are stored securely in the local database.</p>',
             unsafe_allow_html=True)
         if _cfg["outlook_email"]:
             st.markdown(
@@ -2516,14 +2524,14 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
             st.markdown(
                 '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;'
                 'padding:10px 14px;font-size:12px;color:#92400E;margin-bottom:12px">'
-                'Not configured — email notifications are disabled until you save credentials below.'
+                'Not configured — task notification emails will not be sent until you save credentials below.'
                 '</div>',
                 unsafe_allow_html=True)
         _sc1, _sc2 = st.columns(2)
         _s_email = _sc1.text_input(
-            "Outlook / Office 365 Email",
+            "Your Outlook / Office 365 Email",
             value=_cfg["outlook_email"],
-            placeholder="sender@yourcompany.com",
+            placeholder="yourname@yourcompany.com",
             key="settings_outlook_email")
         _s_pwd = _sc2.text_input(
             "Password / App Password",
@@ -2537,11 +2545,11 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
             if not _s_email.strip() or not _s_pwd.strip():
                 st.error("Both email and password are required.")
             else:
-                auth.save_email_settings(_s_email.strip(), _s_pwd.strip())
+                auth.save_user_email_settings(cu["id"], _s_email.strip(), _s_pwd.strip())
                 st.session_state.toast = {"msg": "Outlook settings saved!", "type": "success"}
                 st.rerun()
         if _sc4.button("Clear / Disable Email", key="settings_clear_outlook"):
-            auth.save_email_settings("", "")
+            auth.save_user_email_settings(cu["id"], "", "")
             st.session_state.toast = {"msg": "Email settings cleared.", "type": "info"}
             st.rerun()
 
@@ -2596,6 +2604,7 @@ elif st.session_state.active_tab == "tasks":
                                 _t["assigned_by_email"], _t["assigned_by"],
                                 cu["name"], _t["title"],
                                 _new_stat, _new_prog, _new_comment)
+                        save_to_excel(st.session_state.projects)
                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
 
@@ -2677,6 +2686,7 @@ elif st.session_state.active_tab == "tasks":
                     )
                     if st.button("Save Update", type="primary", key=f"{key_prefix}save_{_t['id']}", use_container_width=True):
                         auth.update_task_progress(_t["id"], _new_prog, _new_stat, _new_comment)
+                        save_to_excel(st.session_state.projects)
                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
 
@@ -2740,17 +2750,26 @@ elif st.session_state.active_tab == "tasks":
                             _sel_idx = _emp_opts.index(_emp_sel)
                             _sel_emp = _assignable[_sel_idx]
                             auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
+                            _my_cfg = auth.get_user_email_settings(cu["id"])
                             email_utils.send_task_assigned_email(
                                 _sel_emp["email"], _sel_emp["name"],
-                                _nt_title, cu["name"], _nt_due.strip())
+                                _nt_title, cu["name"], _nt_due.strip(),
+                                sender_email=_my_cfg["outlook_email"],
+                                sender_password=_my_cfg["outlook_password"])
+                            save_to_excel(st.session_state.projects)
                             st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
                             st.rerun()
 
             _all_tasks = auth.get_all_tasks()
-            st.markdown(
+            _sync_col1, _sync_col2 = st.columns([4, 1])
+            _sync_col1.markdown(
                 f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px">'
                 f'<b>{len(_all_tasks)}</b> total tasks</p>',
                 unsafe_allow_html=True)
+            if _sync_col2.button("Sync to Excel", key="sync_tasks_excel", use_container_width=True):
+                save_to_excel(st.session_state.projects)
+                st.session_state.toast = {"msg": "Tasks synced to Excel!", "type": "success"}
+                st.rerun()
 
             # ── Comment date-range filter ──────────────────────────────────────
             with st.container(border=True):
@@ -2774,12 +2793,12 @@ elif st.session_state.active_tab == "tasks":
                     if not tasks:
                         st.info("No tasks in this category.")
                         return
-                    _thdr = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4])
-                    for _col, _lbl in zip(_thdr, ["Task", "Assigned To", "Assigned By", "Status", "Progress", "Start Date", "Due Date", ""]):
+                    _thdr = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4, 0.4])
+                    for _col, _lbl in zip(_thdr, ["Task", "Assigned To", "Assigned By", "Status", "Progress", "Start Date", "Due Date", "", ""]):
                         _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
 
                     for _t in tasks:
-                        _tc = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4])
+                        _tc = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4, 0.4])
                         _tdesc = _t["description"]
                         _tdesc_short = (_tdesc[:50] + "…") if len(_tdesc) > 50 else _tdesc
                         _tc[0].markdown(
@@ -2803,12 +2822,46 @@ elif st.session_state.active_tab == "tasks":
                             unsafe_allow_html=True)
                         _tc[5].markdown(cell(_t.get("start_date") or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
                         _tc[6].markdown(cell(_t["due_date"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                        _edit_key = f"editing_task_{tab_sfx}_{_t['id']}"
                         with _tc[7]:
+                            if st.button("✏️", key=f"edit_btn_{tab_sfx}_{_t['id']}", help="Edit task", use_container_width=True):
+                                st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+                                st.rerun()
+                        with _tc[8]:
                             st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
                             if st.button("🗑", key=f"dt_{tab_sfx}_{_t['id']}", help="Delete task", use_container_width=True):
                                 auth.delete_task(_t["id"])
+                                save_to_excel(st.session_state.projects)
                                 st.session_state.toast = {"msg": "Task deleted.", "type": "info"}
                                 st.rerun()
+
+                        # ── Inline edit form ───────────────────────────────────
+                        if st.session_state.get(_edit_key, False):
+                            with st.container(border=True):
+                                st.markdown('<div style="font-size:12px;font-weight:700;color:#1D4ED8;margin-bottom:8px">Edit Task</div>', unsafe_allow_html=True)
+                                _ea, _eb = st.columns(2)
+                                _e_title = _ea.text_input("Title *", value=_t["title"], key=f"etitle_{tab_sfx}_{_t['id']}")
+                                _e_desc  = st.text_area("Description", value=_t.get("description", ""), key=f"edesc_{tab_sfx}_{_t['id']}", height=70)
+                                _ec, _ed = st.columns(2)
+                                _e_start_val = date.fromisoformat(_t["start_date"]) if _t.get("start_date") else None
+                                _e_due_val   = date.fromisoformat(_t["due_date"])   if _t.get("due_date")   else None
+                                _e_start_dt  = _ec.date_input("Start Date", value=_e_start_val, key=f"estart_{tab_sfx}_{_t['id']}", format="YYYY-MM-DD")
+                                _e_due_dt    = _ed.date_input("Due Date",   value=_e_due_val,   key=f"edue_{tab_sfx}_{_t['id']}",   format="YYYY-MM-DD")
+                                _es1, _es2 = st.columns([1, 5])
+                                if _es1.button("Save", type="primary", key=f"esave_{tab_sfx}_{_t['id']}"):
+                                    if not _e_title.strip():
+                                        st.error("Title cannot be empty.")
+                                    else:
+                                        _e_start_str = _e_start_dt.strftime("%Y-%m-%d") if _e_start_dt else ""
+                                        _e_due_str   = _e_due_dt.strftime("%Y-%m-%d")   if _e_due_dt   else ""
+                                        auth.update_task_meta(_t["id"], _e_title, _e_desc or "", _e_start_str, _e_due_str)
+                                        save_to_excel(st.session_state.projects)
+                                        st.session_state[_edit_key] = False
+                                        st.session_state.toast = {"msg": "Task updated!", "type": "success"}
+                                        st.rerun()
+                                if _es2.button("Cancel", key=f"ecancel_{tab_sfx}_{_t['id']}"):
+                                    st.session_state[_edit_key] = False
+                                    st.rerun()
 
                         # ── Per-task weekly comments expander ──────────────────
                         _wc_list = auth.get_task_comments_with_users(
