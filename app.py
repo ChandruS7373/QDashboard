@@ -2505,12 +2505,11 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
     st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Configure integrations and notifications</p>', unsafe_allow_html=True)
 
     with st.expander("Outlook Email Settings", expanded=True):
-        _cfg = auth.get_user_email_settings(cu["id"])
+        _cfg = auth.get_email_settings()
         st.markdown(
             '<p style="color:#64748B;font-size:12px;margin-bottom:10px">'
-            'Configure <b>your</b> Outlook / Office 365 account. Task assignment emails '
-            'will be sent from this address to the employee you assign tasks to. '
-            'Credentials are stored securely in the local database.</p>',
+            'Configure the Outlook / Office 365 account used to send task assignment emails '
+            'and notifications. Credentials are stored in the local database.</p>',
             unsafe_allow_html=True)
         if _cfg["outlook_email"]:
             st.markdown(
@@ -2529,9 +2528,9 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
                 unsafe_allow_html=True)
         _sc1, _sc2 = st.columns(2)
         _s_email = _sc1.text_input(
-            "Your Outlook / Office 365 Email",
+            "Outlook / Office 365 Email",
             value=_cfg["outlook_email"],
-            placeholder="yourname@yourcompany.com",
+            placeholder="sender@yourcompany.com",
             key="settings_outlook_email")
         _s_pwd = _sc2.text_input(
             "Password / App Password",
@@ -2545,11 +2544,11 @@ elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "ma
             if not _s_email.strip() or not _s_pwd.strip():
                 st.error("Both email and password are required.")
             else:
-                auth.save_user_email_settings(cu["id"], _s_email.strip(), _s_pwd.strip())
+                auth.save_email_settings(_s_email.strip(), _s_pwd.strip())
                 st.session_state.toast = {"msg": "Outlook settings saved!", "type": "success"}
                 st.rerun()
         if _sc4.button("Clear / Disable Email", key="settings_clear_outlook"):
-            auth.save_user_email_settings(cu["id"], "", "")
+            auth.save_email_settings("", "")
             st.session_state.toast = {"msg": "Email settings cleared.", "type": "info"}
             st.rerun()
 
@@ -2750,12 +2749,9 @@ elif st.session_state.active_tab == "tasks":
                             _sel_idx = _emp_opts.index(_emp_sel)
                             _sel_emp = _assignable[_sel_idx]
                             auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
-                            _my_cfg = auth.get_user_email_settings(cu["id"])
                             email_utils.send_task_assigned_email(
                                 _sel_emp["email"], _sel_emp["name"],
-                                _nt_title, cu["name"], _nt_due.strip(),
-                                sender_email=_my_cfg["outlook_email"],
-                                sender_password=_my_cfg["outlook_password"])
+                                _nt_title, cu["name"], _nt_due.strip())
                             save_to_excel(st.session_state.projects)
                             st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
                             st.rerun()
