@@ -311,12 +311,24 @@ def is_new(row) -> bool:
 esc = html.escape   # shorthand — always escape user-sourced values before HTML injection
 
 def _parse_dmy(s: str):
-    try: return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
-    except: return None
+    """Parse any supported date format into a date object."""
+    v = str(s).strip()
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(v, fmt).date()
+        except ValueError:
+            pass
+    return None
 
 def _parse_ymd(s: str):
-    try: return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
-    except: return None
+    """Parse YYYY-MM-DD or any supported format into a date object."""
+    v = str(s).strip()
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(v, fmt).date()
+        except ValueError:
+            pass
+    return None
 
 def _due_cell(due_str: str) -> str:
     v = str(due_str).strip()
@@ -1009,11 +1021,48 @@ if st.session_state.active_tab not in [t[0] for t in _tab_defs]:
 
 _n = len(_tab_defs)
 if role == "admin":
-    nav_c = st.columns([1] * _n + [0.9, 0.6, 0.55])
+    nav_c = st.columns([1] * _n + [1, 1, 1])
 elif role in ("lead", "manager"):
-    nav_c = st.columns([1] * _n + [0.6, 0.55])
+    nav_c = st.columns([1] * _n + [1, 1, 1])
 else:
-    nav_c = st.columns([1] * _n + [0.6, 0.55])
+    nav_c = st.columns([1] * _n + [1, 1])
+
+# ── Button colour CSS ─────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* All nav buttons: uniform size */
+div[data-testid="stHorizontalBlock"] .stButton button {
+    font-size:11px !important; font-weight:700 !important;
+    padding:0 6px !important; height:36px !important;
+    border-radius:7px !important; letter-spacing:.3px;
+    width:100% !important;
+}
+/* Add Project → emerald */
+div[data-testid="stHorizontalBlock"] div:nth-last-child(3) .stButton button {
+    background:#16A34A !important; color:#fff !important;
+    border-color:#16A34A !important;
+}
+div[data-testid="stHorizontalBlock"] div:nth-last-child(3) .stButton button:hover {
+    background:#15803D !important; border-color:#15803D !important;
+}
+/* Sync → teal */
+div[data-testid="stHorizontalBlock"] div:nth-last-child(2) .stButton button {
+    background:#0D9488 !important; color:#fff !important;
+    border-color:#0D9488 !important; font-size:15px !important;
+}
+div[data-testid="stHorizontalBlock"] div:nth-last-child(2) .stButton button:hover {
+    background:#0F766E !important; border-color:#0F766E !important;
+}
+/* Logout → red */
+div[data-testid="stHorizontalBlock"] div:nth-last-child(1) .stButton button {
+    background:#DC2626 !important; color:#fff !important;
+    border-color:#DC2626 !important;
+}
+div[data-testid="stHorizontalBlock"] div:nth-last-child(1) .stButton button:hover {
+    background:#B91C1C !important; border-color:#B91C1C !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 for _i, (_tid, _tlabel) in enumerate(_tab_defs):
     _active = st.session_state.active_tab == _tid
@@ -1025,32 +1074,35 @@ for _i, (_tid, _tlabel) in enumerate(_tab_defs):
         st.rerun()
 
 if role == "admin":
-    if nav_c[_n].button("Add Project", type="primary", use_container_width=True):
+    if nav_c[_n].button("+ Add", use_container_width=True, key="nav_add_proj"):
         st.session_state.show_modal = "add"
         st.rerun()
-    if nav_c[_n + 1].button("Sync", use_container_width=True):
+    if nav_c[_n + 1].button("↻", use_container_width=True, key="nav_sync_admin"):
         st.session_state.projects = load_from_excel()
         st.session_state.excel_mtime = excel_mtime()
         ids = pd.to_numeric(st.session_state.projects.get("id", pd.Series([])), errors="coerce").dropna()
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
         st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
-    if nav_c[_n + 2].button("Logout", use_container_width=True):
+    if nav_c[_n + 2].button("Logout", use_container_width=True, key="nav_logout_admin"):
         st.session_state.current_user = None
         st.rerun()
 elif role in ("lead", "manager"):
-    if nav_c[_n].button("Sync", use_container_width=True):
+    if nav_c[_n].button("+ Add", use_container_width=True, key="nav_add_proj_lm"):
+        st.session_state.show_modal = "add"
+        st.rerun()
+    if nav_c[_n + 1].button("↻", use_container_width=True, key="nav_sync_lm"):
         st.session_state.projects = load_from_excel()
         st.session_state.excel_mtime = excel_mtime()
         ids = pd.to_numeric(st.session_state.projects.get("id", pd.Series([])), errors="coerce").dropna()
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
         st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
-    if nav_c[_n + 1].button("Logout", use_container_width=True):
+    if nav_c[_n + 2].button("Logout", use_container_width=True, key="nav_logout_lm"):
         st.session_state.current_user = None
         st.rerun()
 else:
-    if nav_c[_n].button("Sync", use_container_width=True):
+    if nav_c[_n].button("↻", use_container_width=True, key="nav_sync_emp"):
         st.session_state.projects = load_from_excel()
         st.session_state.excel_mtime = excel_mtime()
         auth.sync_users_from_excel(USERS_EXCEL_PATH)
@@ -1058,7 +1110,7 @@ else:
         auth.sync_comments_from_excel(EXCEL_PATH)
         st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
-    if nav_c[_n + 1].button("Logout", use_container_width=True):
+    if nav_c[_n + 1].button("Logout", use_container_width=True, key="nav_logout_emp"):
         st.session_state.current_user = None
         st.rerun()
 
@@ -1178,6 +1230,7 @@ if st.session_state.show_modal is not None and role in ("admin", "lead", "manage
             _e_default = _parse_dmy(_e_raw) or date.today()
             _end_dt = _dc2.date_input("End Date", value=_e_default, key="modal_end", format="DD/MM/YYYY")
             end = _end_dt.strftime("%d/%m/%Y") if _end_dt else ""
+
 
         _d_raw = edit_row.get("due_date", "").strip()
         _due_dt_default = _parse_dmy(_d_raw) if _d_raw else None
@@ -2251,8 +2304,8 @@ elif st.session_state.active_tab == "license" and role != "employee":
                     _e_tool  = _ec1.text_input("Tool Name *", value=_lc_rec["tool_name"], key="lc_e_tool")
                     _e_seats = _ec2.number_input("No. of Licenses *", min_value=1, value=int(_lc_rec["no_of_licenses"]), step=1, key="lc_e_seats")
                     _ec3, _ec4 = st.columns(2)
-                    _e_start_dt = _ec3.date_input("Start Date", value=_parse_ymd(_lc_rec["start_date"]), key="lc_e_start", format="YYYY-MM-DD")
-                    _e_end_dt   = _ec4.date_input("End Date", value=_parse_ymd(_lc_rec["end_date"]), key="lc_e_end", format="YYYY-MM-DD")
+                    _e_start_dt = _ec3.date_input("Start Date", value=_parse_ymd(_lc_rec["start_date"]), key="lc_e_start", format="DD/MM/YYYY")
+                    _e_end_dt   = _ec4.date_input("End Date", value=_parse_ymd(_lc_rec["end_date"]), key="lc_e_end", format="DD/MM/YYYY")
                     _e_start = _e_start_dt.strftime("%Y-%m-%d") if _e_start_dt else ""
                     _e_end   = _e_end_dt.strftime("%Y-%m-%d") if _e_end_dt else ""
                     _eb1, _eb2 = st.columns([1, 4])
@@ -2275,8 +2328,8 @@ elif st.session_state.active_tab == "license" and role != "employee":
             _n_tool  = _lc1.text_input("Tool Name *", key="lc_n_tool")
             _n_seats = _lc2.number_input("No. of Licenses *", min_value=1, value=1, step=1, key="lc_n_seats")
             _lc3, _lc4 = st.columns(2)
-            _n_start_dt = _lc3.date_input("Start Date (optional)", value=None, key="lc_n_start", format="YYYY-MM-DD")
-            _n_end_dt   = _lc4.date_input("End Date (optional)", value=None, key="lc_n_end", format="YYYY-MM-DD")
+            _n_start_dt = _lc3.date_input("Start Date (optional)", value=None, key="lc_n_start", format="DD/MM/YYYY")
+            _n_end_dt   = _lc4.date_input("End Date (optional)", value=None, key="lc_n_end", format="DD/MM/YYYY")
             _n_start = _n_start_dt.strftime("%Y-%m-%d") if _n_start_dt else ""
             _n_end   = _n_end_dt.strftime("%Y-%m-%d") if _n_end_dt else ""
             if st.button("Add License", type="primary", key="lc_add_btn"):
@@ -2340,8 +2393,8 @@ elif st.session_state.active_tab == "license" and role != "employee":
                     _sl_e_seats  = _se3.number_input("No. of Licenses *", min_value=1, value=int(_sl_rec["no_of_licenses"]), step=1, key="sl_e_seats")
                     _sl_e_notes  = _se4.text_input("Notes", value=_sl_rec["notes"], key="sl_e_notes")
                     _se5, _se6 = st.columns(2)
-                    _sl_e_start_dt = _se5.date_input("Start Date", value=_parse_ymd(_sl_rec["start_date"]), key="sl_e_start", format="YYYY-MM-DD")
-                    _sl_e_end_dt   = _se6.date_input("End Date", value=_parse_ymd(_sl_rec["end_date"]), key="sl_e_end", format="YYYY-MM-DD")
+                    _sl_e_start_dt = _se5.date_input("Start Date", value=_parse_ymd(_sl_rec["start_date"]), key="sl_e_start", format="DD/MM/YYYY")
+                    _sl_e_end_dt   = _se6.date_input("End Date", value=_parse_ymd(_sl_rec["end_date"]), key="sl_e_end", format="DD/MM/YYYY")
                     _sl_e_start = _sl_e_start_dt.strftime("%Y-%m-%d") if _sl_e_start_dt else ""
                     _sl_e_end   = _sl_e_end_dt.strftime("%Y-%m-%d") if _sl_e_end_dt else ""
                     _sb1, _sb2 = st.columns([1, 4])
@@ -2372,8 +2425,8 @@ elif st.session_state.active_tab == "license" and role != "employee":
                 _sl_n_seats  = _sa3.number_input("No. of Licenses *", min_value=1, value=1, step=1, key="sl_n_seats")
                 _sl_n_notes  = _sa4.text_input("Notes (optional)", key="sl_n_notes")
                 _sa5, _sa6 = st.columns(2)
-                _sl_n_start_dt = _sa5.date_input("Start Date (optional)", value=None, key="sl_n_start", format="YYYY-MM-DD")
-                _sl_n_end_dt   = _sa6.date_input("End Date (optional)", value=None, key="sl_n_end", format="YYYY-MM-DD")
+                _sl_n_start_dt = _sa5.date_input("Start Date (optional)", value=None, key="sl_n_start", format="DD/MM/YYYY")
+                _sl_n_end_dt   = _sa6.date_input("End Date (optional)", value=None, key="sl_n_end", format="DD/MM/YYYY")
                 _sl_n_start = _sl_n_start_dt.strftime("%Y-%m-%d") if _sl_n_start_dt else ""
                 _sl_n_end   = _sl_n_end_dt.strftime("%Y-%m-%d") if _sl_n_end_dt else ""
                 if st.button("Add Sold License", type="primary", key="sl_add_btn"):
@@ -2874,62 +2927,47 @@ elif st.session_state.active_tab == "tasks":
                         _new_prog = st.slider("Progress %", 0, 100, _pct, step=5, key=f"prog_{_t['id']}")
                         _stat_idx = auth.TASK_STATUSES.index(_t["status"]) if _t["status"] in auth.TASK_STATUSES else 0
                         _new_stat = st.selectbox("Status", auth.TASK_STATUSES, index=_stat_idx, key=f"stat_{_t['id']}")
-                    if st.button("Save Update", type="primary", key=f"save_p_{_t['id']}", use_container_width=True):
-                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _t.get("comment", ""))
-                        if _t.get("assigned_by_email"):
-                            email_utils.send_task_updated_email(
-                                _t["assigned_by_email"], _t["assigned_by"],
-                                cu["name"], _t["title"],
-                                _new_stat, _new_prog, "")
-                        save_to_excel_async(st.session_state.projects)
-                        st.session_state.toast = {"msg": "Task updated!", "type": "success"}
-                        st.rerun()
 
-                    # ── Weekly Update (locked after submission) ────────────────
+                    # ── Weekly comment (inline, no separate button) ────────────
                     _wk_start = auth.get_week_start()
                     _wk_end_dt = date.fromisoformat(_wk_start) + timedelta(days=6)
                     _wk_label = (f"{date.fromisoformat(_wk_start).strftime('%d %b')} – "
                                  f"{_wk_end_dt.strftime('%d %b %Y')}")
-                    st.markdown(
-                        f'<div style="font-size:11px;font-weight:800;color:#334155;'
-                        f'border-top:1px solid #E2E8F0;margin-top:10px;padding-top:10px">'
-                        f'Weekly Update — {_wk_label}</div>',
-                        unsafe_allow_html=True)
                     _existing_wc = auth.get_user_week_comment(_t["id"], cu["id"], _wk_start)
                     if _existing_wc:
                         _wc_ca = str(_existing_wc["created_at"])
                         _wc_disp = fmt_date(_wc_ca[:10]) + " " + _wc_ca[11:16] if len(_wc_ca) >= 16 else _wc_ca
                         st.markdown(
-                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:10px;'
-                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:8px">'
-                            f'<span style="font-weight:700;color:#10B981">Submitted ✓</span>&nbsp; '
-                            f'{esc(_existing_wc["comment"])}'
-                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_wc_disp)}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True)
+                            f'<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;'
+                            f'padding:8px 12px;font-size:12px;color:#166534;margin-top:6px">'
+                            f'<b>Week {_wk_label}:</b> {esc(_existing_wc["comment"])}'
+                            f'<span style="font-size:10px;color:#94A3B8;margin-left:8px">{esc(_wc_disp)}</span>'
+                            f'</div>', unsafe_allow_html=True)
+                        _wc_input = ""
                     else:
-                        _wc_text = st.text_area(
-                            "Weekly update", height=70,
-                            key=f"wc_{_t['id']}",
+                        st.markdown(
+                            f'<div style="font-size:10px;color:#64748B;margin-top:6px;margin-bottom:2px">'
+                            f'Weekly note ({_wk_label}) — optional</div>', unsafe_allow_html=True)
+                        _wc_input = st.text_area(
+                            "Weekly note", height=60, key=f"wc_{_t['id']}",
                             placeholder="Describe your progress this week…",
                             label_visibility="collapsed")
-                        if st.button("Submit Weekly Update", key=f"wc_sub_{_t['id']}",
-                                     use_container_width=True):
-                            if _wc_text.strip():
-                                _cph = st.empty()
-                                _cph.markdown(_POPUP_LOADING, unsafe_allow_html=True)
-                                try:
-                                    _saved = auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
-                                    if _saved:
-                                        save_to_excel(st.session_state.projects)
-                                        st.session_state.task_popup = "success"
-                                    else:
-                                        st.session_state.task_popup = "error"
-                                except Exception:
-                                    st.session_state.task_popup = "error"
-                                st.rerun()
-                            else:
-                                st.warning("Please enter a comment before submitting.")
+
+                    _sb1, _sb2 = st.columns([1, 3])
+                    if _sb1.button("Save", type="primary", key=f"save_p_{_t['id']}", use_container_width=True):
+                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _t.get("comment", ""))
+                        if not _existing_wc and _wc_input.strip():
+                            try:
+                                auth.add_task_comment(_t["id"], cu["id"], _wc_input, _wk_start)
+                            except Exception:
+                                pass
+                        if _t.get("assigned_by_email"):
+                            email_utils.send_task_updated_email(
+                                _t["assigned_by_email"], _t["assigned_by"],
+                                cu["name"], _t["title"], _new_stat, _new_prog, "")
+                        save_to_excel(st.session_state.projects)
+                        st.session_state.toast = {"msg": "Saved!", "type": "success"}
+                        st.rerun()
 
     else:
         # ── Admin / Lead / Manager: create + view all tasks ───────────────────
@@ -2972,57 +3010,43 @@ elif st.session_state.active_tab == "tasks":
                             _new_prog = st.slider("Progress %", 0, 100, _pct, step=5, key=f"{key_prefix}prog_{_t['id']}")
                             _stat_idx = auth.TASK_STATUSES.index(_t["status"]) if _t["status"] in auth.TASK_STATUSES else 0
                             _new_stat = st.selectbox("Status", auth.TASK_STATUSES, index=_stat_idx, key=f"{key_prefix}stat_{_t['id']}")
-                    if st.button("Save Update", type="primary", key=f"{key_prefix}save_{_t['id']}", use_container_width=True):
-                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _t.get("comment", ""))
-                        save_to_excel_async(st.session_state.projects)
-                        st.session_state.toast = {"msg": "Task updated!", "type": "success"}
-                        st.rerun()
 
-                    # ── Weekly Update ──────────────────────────────────────────
+                    # ── Weekly comment (inline) ────────────────────────────────
                     _wk_start = auth.get_week_start()
                     _wk_end_dt = date.fromisoformat(_wk_start) + timedelta(days=6)
                     _wk_label = (f"{date.fromisoformat(_wk_start).strftime('%d %b')} – "
                                  f"{_wk_end_dt.strftime('%d %b %Y')}")
-                    st.markdown(
-                        f'<div style="font-size:11px;font-weight:800;color:#334155;'
-                        f'border-top:1px solid #E2E8F0;margin-top:10px;padding-top:10px">'
-                        f'Weekly Update — {_wk_label}</div>',
-                        unsafe_allow_html=True)
                     _existing_wc = auth.get_user_week_comment(_t["id"], cu["id"], _wk_start)
                     if _existing_wc:
                         _wc_ca2 = str(_existing_wc["created_at"])
                         _wc_disp2 = fmt_date(_wc_ca2[:10]) + " " + _wc_ca2[11:16] if len(_wc_ca2) >= 16 else _wc_ca2
                         st.markdown(
-                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:10px;'
-                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:8px">'
-                            f'<span style="font-weight:700;color:#10B981">Submitted ✓</span>&nbsp; '
-                            f'{esc(_existing_wc["comment"])}'
-                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_wc_disp2)}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True)
+                            f'<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;'
+                            f'padding:8px 12px;font-size:12px;color:#166534;margin-top:6px">'
+                            f'<b>Week {_wk_label}:</b> {esc(_existing_wc["comment"])}'
+                            f'<span style="font-size:10px;color:#94A3B8;margin-left:8px">{esc(_wc_disp2)}</span>'
+                            f'</div>', unsafe_allow_html=True)
+                        _wc_input2 = ""
                     else:
-                        _wc_text = st.text_area(
-                            "Weekly update", height=70,
-                            key=f"{key_prefix}wc_{_t['id']}",
+                        st.markdown(
+                            f'<div style="font-size:10px;color:#64748B;margin-top:6px;margin-bottom:2px">'
+                            f'Weekly note ({_wk_label}) — optional</div>', unsafe_allow_html=True)
+                        _wc_input2 = st.text_area(
+                            "Weekly note", height=60, key=f"{key_prefix}wc_{_t['id']}",
                             placeholder="Describe your progress this week…",
                             label_visibility="collapsed")
-                        if st.button("Submit Weekly Update", key=f"{key_prefix}wc_sub_{_t['id']}",
-                                     use_container_width=True):
-                            if _wc_text.strip():
-                                _cph2 = st.empty()
-                                _cph2.markdown(_POPUP_LOADING, unsafe_allow_html=True)
-                                try:
-                                    _saved2 = auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
-                                    if _saved2:
-                                        save_to_excel(st.session_state.projects)
-                                        st.session_state.task_popup = "success"
-                                    else:
-                                        st.session_state.task_popup = "error"
-                                except Exception:
-                                    st.session_state.task_popup = "error"
-                                st.rerun()
-                            else:
-                                st.warning("Please enter a comment before submitting.")
+
+                    _sb1, _sb2 = st.columns([1, 3])
+                    if _sb1.button("Save", type="primary", key=f"{key_prefix}save_{_t['id']}", use_container_width=True):
+                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _t.get("comment", ""))
+                        if not _existing_wc and _wc_input2.strip():
+                            try:
+                                auth.add_task_comment(_t["id"], cu["id"], _wc_input2, _wk_start)
+                            except Exception:
+                                pass
+                        save_to_excel(st.session_state.projects)
+                        st.session_state.toast = {"msg": "Saved!", "type": "success"}
+                        st.rerun()
 
         def _render_all_tasks_panel():
             # ── Popup overlay (success / error from previous action) ───────────
@@ -3061,8 +3085,8 @@ elif st.session_state.active_tab == "tasks":
                                                 help="Employees and Leads are listed here.")
                     _nt_desc   = st.text_area("Description (optional)", key="nt_desc", height=80)
                     _ta3, _ta4, _ta5 = st.columns(3)
-                    _nt_start_dt = _ta3.date_input("Start Date (optional)", value=None, key="nt_start_dt", format="YYYY-MM-DD")
-                    _nt_due_dt   = _ta4.date_input("Due Date (optional)", value=None, key="nt_due_dt", format="YYYY-MM-DD")
+                    _nt_start_dt = _ta3.date_input("Start Date (optional)", value=None, key="nt_start_dt", format="DD/MM/YYYY")
+                    _nt_due_dt   = _ta4.date_input("Due Date (optional)", value=None, key="nt_due_dt", format="DD/MM/YYYY")
                     _ta5.text_input("Assigned By", value=cu["name"], disabled=True, key="nt_assigned_by")
                     _nt_start = _nt_start_dt.strftime("%Y-%m-%d") if _nt_start_dt else ""
                     _nt_due   = _nt_due_dt.strftime("%Y-%m-%d") if _nt_due_dt else ""
@@ -3109,11 +3133,11 @@ elif st.session_state.active_tab == "tasks":
                 _cm_from_dt = _cf1.date_input(
                     "From (week start)", key="cm_from",
                     value=date.today() - timedelta(weeks=4),
-                    format="YYYY-MM-DD")
+                    format="DD/MM/YYYY")
                 _cm_to_dt = _cf2.date_input(
                     "To (week start)", key="cm_to",
                     value=date.today(),
-                    format="YYYY-MM-DD")
+                    format="DD/MM/YYYY")
                 _cm_from_str = _cm_from_dt.strftime("%Y-%m-%d") if _cm_from_dt else None
                 _cm_to_str   = _cm_to_dt.strftime("%Y-%m-%d") if _cm_to_dt else None
 
@@ -3177,8 +3201,8 @@ elif st.session_state.active_tab == "tasks":
                                 _ec, _ed = st.columns(2)
                                 _e_start_val = date.fromisoformat(_t["start_date"]) if _t.get("start_date") else None
                                 _e_due_val   = date.fromisoformat(_t["due_date"])   if _t.get("due_date")   else None
-                                _e_start_dt  = _ec.date_input("Start Date", value=_e_start_val, key=f"estart_{tab_sfx}_{_t['id']}", format="YYYY-MM-DD")
-                                _e_due_dt    = _ed.date_input("Due Date",   value=_e_due_val,   key=f"edue_{tab_sfx}_{_t['id']}",   format="YYYY-MM-DD")
+                                _e_start_dt  = _ec.date_input("Start Date", value=_e_start_val, key=f"estart_{tab_sfx}_{_t['id']}", format="DD/MM/YYYY")
+                                _e_due_dt    = _ed.date_input("Due Date",   value=_e_due_val,   key=f"edue_{tab_sfx}_{_t['id']}",   format="DD/MM/YYYY")
                                 _es1, _es2 = st.columns([1, 5])
                                 if _es1.button("Save", type="primary", key=f"esave_{tab_sfx}_{_t['id']}"):
                                     if not _e_title.strip():
