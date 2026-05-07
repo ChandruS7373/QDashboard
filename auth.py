@@ -463,6 +463,7 @@ def update_task_progress(task_id: int, progress: int, status: str, comment: str 
 def delete_task(task_id: int):
     conn = get_conn()
     c = conn.cursor()
+    c.execute("DELETE FROM task_comments WHERE task_id=?", (task_id,))
     c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
     conn.commit()
     conn.close()
@@ -619,7 +620,7 @@ def get_week_start(dt=None) -> str:
 # ── TASK COMMENT CRUD ──────────────────────────────────────────────────────────
 
 def add_task_comment(task_id: int, user_id: int, comment: str, week_start: str) -> bool:
-    """Insert weekly comment. Returns False if already exists for this week."""
+    """Insert weekly comment. Returns False if already exists or any DB error occurs."""
     conn = get_conn()
     c = conn.cursor()
     try:
@@ -629,7 +630,7 @@ def add_task_comment(task_id: int, user_id: int, comment: str, week_start: str) 
         )
         conn.commit()
         return True
-    except sqlite3.IntegrityError:
+    except Exception:
         return False
     finally:
         conn.close()
@@ -675,5 +676,27 @@ def get_task_comments_with_users(task_id: int = None, from_date: str = None, to_
     return [
         {"id": r[0], "task_id": r[1], "task_title": r[2], "week_start": r[3],
          "comment": r[4], "created_at": r[5], "user_name": r[6], "user_email": r[7]}
+        for r in rows
+    ]
+
+
+def get_all_comments_for_excel() -> list:
+    """Return all task comments with task title, employee info, and timestamps for Excel export."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT tc.id, t.id, t.title, u.name, u.email,
+               tc.comment, tc.week_start, tc.created_at
+        FROM task_comments tc
+        JOIN tasks t ON tc.task_id = t.id
+        JOIN users u ON tc.user_id = u.id
+        ORDER BY tc.created_at DESC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "task_id": r[1], "task_title": r[2],
+         "employee_name": r[3], "employee_email": r[4],
+         "comment": r[5], "week_start": r[6], "created_at": r[7]}
         for r in rows
     ]

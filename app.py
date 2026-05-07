@@ -6,6 +6,7 @@ import anthropic
 import os
 import html
 import re
+import threading
 from datetime import datetime, date, timedelta
 from jinja2 import Template
 import auth
@@ -131,6 +132,9 @@ def build_excel_bytes(df: pd.DataFrame) -> bytes:
         columns=["id","title","description","status","progress","due_date","start_date",
                  "created_at","updated_at","comment","assigned_to","assigned_to_email",
                  "assigned_by","assigned_by_email"])
+    comment_records = auth.get_all_comments_for_excel()
+    comment_df = pd.DataFrame(comment_records) if comment_records else pd.DataFrame(
+        columns=["id","task_id","task_title","employee_name","employee_email","comment","week_start","created_at"])
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         out[EXCEL_COLS].to_excel(writer, sheet_name="Project Details", index=False)
@@ -138,11 +142,12 @@ def build_excel_bytes(df: pd.DataFrame) -> bytes:
         license_df.to_excel(writer, sheet_name="License", index=False)
         sold_df.to_excel(writer, sheet_name="Sold_License", index=False)
         user_df.to_excel(writer, sheet_name="Users", index=False)
-        task_df.to_excel(writer, sheet_name="Tasks", index=False)
+        task_df.drop(columns=["comment"], errors="ignore").to_excel(writer, sheet_name="Tasks", index=False)
+        comment_df.to_excel(writer, sheet_name="Comments", index=False)
     return buf.getvalue()
 
 
-def save_to_excel(df: pd.DataFrame):
+def save_to_excel(df: pd.DataFrame) -> bool:
     import tempfile, shutil
     out = df.copy()
     for col in EXCEL_COLS:
@@ -167,29 +172,49 @@ def save_to_excel(df: pd.DataFrame):
                  "created_at","updated_at","comment","assigned_to","assigned_to_email",
                  "assigned_by","assigned_by_email"]
     )
-    # Write to a temp file first, then replace — avoids PermissionError when Excel has the file open
+    comment_records = auth.get_all_comments_for_excel()
+    comment_df = pd.DataFrame(comment_records) if comment_records else pd.DataFrame(
+        columns=["id","task_id","task_title","employee_name","employee_email","comment","week_start","created_at"]
+    )
+    # Write to a temp file first, then atomically replace the live file
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", dir=os.path.dirname(EXCEL_PATH))
     os.close(tmp_fd)
+    _moved = False
     try:
+        task_df_excel = task_df.drop(columns=["comment"], errors="ignore")
         with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
             out[EXCEL_COLS].to_excel(writer, sheet_name="Project Details", index=False)
             presales_df.to_excel(writer, sheet_name="Presales_POC", index=False)
             license_df.to_excel(writer, sheet_name="License", index=False)
             sold_df.to_excel(writer, sheet_name="Sold_License", index=False)
             user_df.to_excel(writer, sheet_name="Users", index=False)
-            task_df.to_excel(writer, sheet_name="Tasks", index=False)
+            task_df_excel.to_excel(writer, sheet_name="Tasks", index=False)
+            comment_df.to_excel(writer, sheet_name="Comments", index=False)
         shutil.move(tmp_path, EXCEL_PATH)
-    except PermissionError:
-        # projects.xlsx is open in Excel — keep temp file as fallback and surface a clear warning
-        st.warning(
-            "⚠️ **Could not save to projects.xlsx** — the file is open in Excel. "
-            "Please close Excel and click **Sync** to reload, or your changes are held in memory only.",
-            icon=None,
-        )
+        _moved = True
     except Exception:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
+        pass
+    finally:
+        if not _moved:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+    return _moved
+
+
+def save_to_excel_async(df: pd.DataFrame):
+    """Non-blocking Excel save with retry — retries up to 3× if the file is locked."""
+    import time
+    _df_copy = df.copy()
+    def _write():
+        for _attempt in range(3):
+            if save_to_excel(_df_copy):
+                return
+            if _attempt < 2:
+                time.sleep(1.5)
+    threading.Thread(target=_write, daemon=True).start()
 
 def load_from_excel() -> pd.DataFrame:
     if os.path.exists(EXCEL_PATH):
@@ -426,6 +451,7 @@ if "forgot_uid"           not in st.session_state: st.session_state.forgot_uid  
 if "user_edit_id"         not in st.session_state: st.session_state.user_edit_id         = None
 if "task_comment_view" not in st.session_state: st.session_state.task_comment_view = None
 if "poc_row_edit"     not in st.session_state: st.session_state.poc_row_edit     = None
+if "task_popup"       not in st.session_state: st.session_state.task_popup       = None
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def get_stats(d):
@@ -652,6 +678,28 @@ div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="
 }
 .kpi-anim{animation:kpi-slide-in .38s cubic-bezier(0.34,1.3,0.64,1) both}
 
+/* ── Toast notification animation ── */
+@keyframes toastPop{
+  0%  {opacity:0;transform:translateY(-18px) scale(0.88)}
+  55% {opacity:1;transform:translateY(5px)   scale(1.03)}
+  80% {transform:translateY(-2px) scale(1.00)}
+  100%{opacity:1;transform:translateY(0)     scale(1)}
+}
+.toast-anim{animation:toastPop .45s cubic-bezier(0.34,1.4,0.64,1) both}
+
+/* ── Task row action button alignment ── */
+div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"],
+div[data-testid="stMarkdownContainer"]:has(.act-del-marker) ~ div[data-testid="stButton"] {
+  margin-top:4px!important;
+}
+div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button{
+  background:#EFF6FF!important;border:1.5px solid #BFDBFE!important;
+  color:#1D4ED8!important;font-size:15px!important;
+  min-height:30px!important;padding:2px 8px!important;
+  transition:background .15s,border-color .15s!important}
+div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button:hover{
+  background:#DBEAFE!important;border-color:#93C5FD!important}
+
 /* ── Expand arrow button ── */
 .expand-btn button{
   border-radius:50%!important;
@@ -668,8 +716,80 @@ div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="
 .hd-table tr:hover td{background:#F0F4FF}
 .hd-table tr:nth-child(even) td{background:#F8FAFC}
 .hd-table tr:nth-child(even):hover td{background:#EFF6FF}
+
+/* ── Task creation popup overlay ── */
+.task-popup-overlay{
+  position:fixed;top:0;left:0;width:100vw;height:100vh;
+  background:rgba(15,23,42,.55);z-index:99999;
+  display:flex;align-items:center;justify-content:center;
+  animation:popOverlayIn .22s ease-out forwards;cursor:pointer;}
+.task-popup-box{
+  width:188px;height:188px;border-radius:26px;background:#fff;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:16px;box-shadow:0 28px 72px rgba(0,0,0,.5);
+  animation:popBoxIn .42s cubic-bezier(.34,1.6,.64,1) forwards;}
+.task-popup-lbl{font-size:15px;font-weight:800;letter-spacing:-.3px}
+.task-popup-spinner{
+  width:60px;height:60px;border:5px solid #EFF6FF;
+  border-top-color:#3B82F6;border-right-color:#3B82F6;
+  border-radius:50%;animation:popSpin .65s linear infinite;}
+.task-popup-svg{width:72px;height:72px;overflow:visible}
+.tp-circle{fill:none;stroke-width:4;stroke-dasharray:165;stroke-dashoffset:165;
+  animation:popDraw .5s cubic-bezier(.4,0,.2,1) .06s forwards;}
+.tp-tick-c{stroke:#10B981}.tp-cross-c{stroke:#EF4444}
+.tp-tick-p{fill:none;stroke:#10B981;stroke-width:5;stroke-linecap:round;
+  stroke-linejoin:round;stroke-dasharray:47;stroke-dashoffset:47;
+  animation:popDraw .28s ease-out .55s forwards;}
+.tp-cross-p{fill:none;stroke:#EF4444;stroke-width:5;stroke-linecap:round;
+  stroke-dasharray:34;stroke-dashoffset:34;}
+.tp-cross-p1{animation:popDraw .2s ease-out .52s forwards;}
+.tp-cross-p2{animation:popDraw .2s ease-out .7s forwards;}
+@keyframes popOverlayIn{from{opacity:0}to{opacity:1}}
+@keyframes popBoxIn{
+  0%{opacity:0;transform:scale(.3)}
+  65%{transform:scale(1.08)}
+  100%{opacity:1;transform:scale(1)}}
+@keyframes popSpin{to{transform:rotate(360deg)}}
+@keyframes popDraw{to{stroke-dashoffset:0}}
+/* Auto-dismiss: fade in → stay → fade out, total ~1.2s */
+@keyframes popLifecycle{
+  0%{opacity:0}
+  18%{opacity:1}
+  70%{opacity:1}
+  100%{opacity:0}}
+.task-popup-auto{animation:popLifecycle 1.2s ease forwards!important;pointer-events:none!important;cursor:default!important}
 </style>
 """, unsafe_allow_html=True)
+
+# ── TASK POPUP HTML CONSTANTS ─────────────────────────────────────────────────
+_POPUP_LOADING = (
+    '<div class="task-popup-overlay" id="tpop" style="cursor:default">'
+    '<div class="task-popup-box">'
+    '<div class="task-popup-spinner"></div>'
+    '<div class="task-popup-lbl" style="color:#3B82F6">Creating…</div>'
+    '</div></div>'
+)
+_POPUP_SUCCESS = (
+    '<div class="task-popup-overlay task-popup-auto">'
+    '<div class="task-popup-box">'
+    '<svg class="task-popup-svg" viewBox="0 0 54 54">'
+    '<circle class="tp-circle tp-tick-c" cx="27" cy="27" r="23"/>'
+    '<path class="tp-tick-p" d="M15 28 L23.5 36.5 L39 18"/>'
+    '</svg>'
+    '<div class="task-popup-lbl" style="color:#10B981">Assigned!</div>'
+    '</div></div>'
+)
+_POPUP_ERROR = (
+    '<div class="task-popup-overlay task-popup-auto">'
+    '<div class="task-popup-box">'
+    '<svg class="task-popup-svg" viewBox="0 0 54 54">'
+    '<circle class="tp-circle tp-cross-c" cx="27" cy="27" r="23"/>'
+    '<path class="tp-cross-p tp-cross-p1" d="M17 17 L37 37"/>'
+    '<path class="tp-cross-p tp-cross-p2" d="M37 17 L17 37"/>'
+    '</svg>'
+    '<div class="task-popup-lbl" style="color:#EF4444">Not Assigned</div>'
+    '</div></div>'
+)
 
 # ── LOGIN GATE ───────────────────────────────────────────────────────────────
 def _render_login():
@@ -832,11 +952,20 @@ st.markdown(
 # ── TOAST ─────────────────────────────────────────────────────────────────────
 if st.session_state.toast:
     t = st.session_state.toast
-    colors = {"success": ("#064E3B","#10B981"), "error": ("#7F1D1D","#EF4444"), "info": ("#1E3A8A","#3B82F6")}
-    bg, border = colors.get(t.get("type","success"), ("#064E3B","#10B981"))
-    st.markdown(f'<div style="background:{bg};border:1px solid {border};border-radius:10px;'
-                f'padding:11px 18px;color:#fff;font-size:13px;font-weight:600;margin-bottom:12px">'
-                f'{esc(t["msg"])}</div>', unsafe_allow_html=True)
+    _toast_cfg = {
+        "success": ("#064E3B","#10B981","✓"),
+        "error":   ("#7F1D1D","#EF4444","✗"),
+        "info":    ("#1E3A8A","#3B82F6","ℹ"),
+    }
+    bg, border, icon = _toast_cfg.get(t.get("type","success"), ("#064E3B","#10B981","✓"))
+    st.markdown(
+        f'<div class="toast-anim" style="background:{bg};border:1px solid {border};border-radius:12px;'
+        f'padding:12px 20px;color:#fff;font-size:13px;font-weight:600;margin-bottom:12px;'
+        f'display:flex;align-items:center;gap:10px;box-shadow:0 6px 20px rgba(0,0,0,.28)">'
+        f'<span style="font-size:17px;flex-shrink:0">{icon}</span>'
+        f'<span>{html.escape(t["msg"])}</span>'
+        f'</div>',
+        unsafe_allow_html=True)
     st.session_state.toast = None
 
 # ── TOP BAR: TABS + ACTIONS ───────────────────────────────────────────────────
@@ -858,11 +987,11 @@ if st.session_state.active_tab not in [t[0] for t in _tab_defs]:
 
 _n = len(_tab_defs)
 if role == "admin":
-    nav_c = st.columns([1] * _n + [0.9, 0.6, 0.7, 0.55])
+    nav_c = st.columns([1] * _n + [0.9, 0.6, 0.55])
 elif role in ("lead", "manager"):
-    nav_c = st.columns([1] * _n + [0.6, 0.7, 0.55])
+    nav_c = st.columns([1] * _n + [0.6, 0.55])
 else:
-    nav_c = st.columns([1] * _n + [0.55])
+    nav_c = st.columns([1] * _n + [0.6, 0.55])
 
 for _i, (_tid, _tlabel) in enumerate(_tab_defs):
     _active = st.session_state.active_tab == _tid
@@ -884,12 +1013,7 @@ if role == "admin":
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
         st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
-    nav_c[_n + 2].download_button(
-        "Download", data=build_excel_bytes(st.session_state.projects),
-        file_name="qualesce_data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True)
-    if nav_c[_n + 3].button("Logout", use_container_width=True):
+    if nav_c[_n + 2].button("Logout", use_container_width=True):
         st.session_state.current_user = None
         st.rerun()
 elif role in ("lead", "manager"):
@@ -900,16 +1024,14 @@ elif role in ("lead", "manager"):
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
         st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
-    nav_c[_n + 1].download_button(
-        "Download", data=build_excel_bytes(st.session_state.projects),
-        file_name="qualesce_data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True)
     if nav_c[_n + 1].button("Logout", use_container_width=True):
         st.session_state.current_user = None
         st.rerun()
 else:
-    if nav_c[_n].button("Logout", use_container_width=True):
+    if nav_c[_n].button("Sync", use_container_width=True):
+        st.session_state.toast = {"msg": "Tasks refreshed!", "type": "success"}
+        st.rerun()
+    if nav_c[_n + 1].button("Logout", use_container_width=True):
         st.session_state.current_user = None
         st.rerun()
 
@@ -1105,7 +1227,7 @@ if st.session_state.show_modal is not None and role in ("admin", "lead", "manage
                     st.session_state.projects = pd.DataFrame(records)
                     st.session_state.toast = {"msg": f'"{name}" updated!', "type": "success"}
 
-                save_to_excel(st.session_state.projects)
+                save_to_excel_async(st.session_state.projects)
                 st.session_state.excel_mtime = excel_mtime()
                 st.session_state.show_modal = None
                 st.rerun()
@@ -1121,7 +1243,7 @@ if st.session_state.confirm_delete and role == "admin":
         # Delete by id (not name) to avoid deleting two projects with the same name
         st.session_state.projects = st.session_state.projects[
             st.session_state.projects["id"].astype(str) != str(cd["id"])].reset_index(drop=True)
-        save_to_excel(st.session_state.projects)
+        save_to_excel_async(st.session_state.projects)
         st.session_state.excel_mtime = excel_mtime()
         st.session_state.messages.append({"role":"assistant",
             "content": f'"{cd["name"]}" removed. Dashboard updated.'})
@@ -1930,7 +2052,7 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
                         ]
                         if len(_proj_idx) > 0:
                             st.session_state.projects.at[_proj_idx[0], "desc"] = _new_comment.strip()
-                            save_to_excel(st.session_state.projects)
+                            save_to_excel_async(st.session_state.projects)
                             st.session_state.excel_mtime = excel_mtime()
                         st.session_state.poc_row_edit = None
                         st.session_state.toast = {"msg": "Comment saved!", "type": "success"}
@@ -2025,7 +2147,7 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
                             [st.session_state.projects, pd.DataFrame([_ps_row])], ignore_index=True
                         )
                         st.session_state.next_id += 1
-                        save_to_excel(st.session_state.projects)
+                        save_to_excel_async(st.session_state.projects)
                         st.session_state.excel_mtime = excel_mtime()
                         st.session_state.toast = {"msg": f'"{_ps_new_name.strip()}" added!', "type": "success"}
                         st.rerun()
@@ -2112,7 +2234,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                             st.error("Tool name is required.")
                         else:
                             auth.update_license(st.session_state.lc_edit_id, _e_tool, int(_e_seats), _e_start, _e_end)
-                            save_to_excel(st.session_state.projects)
+                            save_to_excel_async(st.session_state.projects)
                             st.session_state.lc_edit_id = None
                             st.session_state.toast = {"msg": "License updated!", "type": "success"}
                             st.rerun()
@@ -2135,7 +2257,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                     st.error("Tool name is required.")
                 else:
                     auth.create_license(_n_tool, int(_n_seats), _n_start, _n_end)
-                    save_to_excel(st.session_state.projects)
+                    save_to_excel_async(st.session_state.projects)
                     st.session_state.toast = {"msg": f'License "{_n_tool}" added!', "type": "success"}
                     st.rerun()
 
@@ -2168,7 +2290,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                         st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
                         if st.button("🗑", key=f"lc_d_{_lic['id']}", help="Delete license", use_container_width=True):
                             auth.delete_license(_lic["id"])
-                            save_to_excel(st.session_state.projects)
+                            save_to_excel_async(st.session_state.projects)
                             st.session_state.toast = {"msg": f'License "{_lic["tool_name"]}" deleted.', "type": "info"}
                             st.rerun()
 
@@ -2203,7 +2325,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                             auth.update_sold_license(st.session_state.sl_edit_id, _sl_e_tool,
                                                      _sl_e_client, int(_sl_e_seats),
                                                      _sl_e_start, _sl_e_end, _sl_e_notes)
-                            save_to_excel(st.session_state.projects)
+                            save_to_excel_async(st.session_state.projects)
                             st.session_state.sl_edit_id = None
                             st.session_state.toast = {"msg": "Sold license updated!", "type": "success"}
                             st.rerun()
@@ -2233,7 +2355,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                     else:
                         auth.create_sold_license(_sl_n_tool, _sl_n_client, int(_sl_n_seats),
                                                  _sl_n_start, _sl_n_end, _sl_n_notes)
-                        save_to_excel(st.session_state.projects)
+                        save_to_excel_async(st.session_state.projects)
                         st.session_state.toast = {"msg": f'Sold license "{_sl_n_tool}" added!', "type": "success"}
                         st.rerun()
 
@@ -2268,7 +2390,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                         st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
                         if st.button("🗑", key=f"sl_d_{_sl['id']}", help="Delete sold license", use_container_width=True):
                             auth.delete_sold_license(_sl["id"])
-                            save_to_excel(st.session_state.projects)
+                            save_to_excel_async(st.session_state.projects)
                             st.session_state.toast = {"msg": f'Sold license deleted.', "type": "info"}
                             st.rerun()
 
@@ -2333,8 +2455,14 @@ elif st.session_state.active_tab == "agent" and role in ("admin", "lead", "manag
 # TAB: USER MANAGEMENT  (admin only)
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "users" and role == "admin":
-    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">User Management</h2>', unsafe_allow_html=True)
-    st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Create accounts, assign roles, and manage password resets</p>', unsafe_allow_html=True)
+    _um_h1, _um_h2 = st.columns([5, 1])
+    _um_h1.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">User Management</h2>', unsafe_allow_html=True)
+    _um_h1.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Create accounts, assign roles, and manage password resets</p>', unsafe_allow_html=True)
+    if _um_h2.button("Sync Users", use_container_width=True, key="sync_users_btn"):
+        sync_users_excel()
+        save_to_excel_async(st.session_state.projects)
+        st.session_state.toast = {"msg": "Users synced to Excel!", "type": "success"}
+        st.rerun()
 
     _users_cache = auth.get_all_users()
 
@@ -2446,7 +2574,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                             _errors.append(f"{_iemail}: {_ex}")
                     if _pw_map:
                         sync_users_excel(_pw_map)
-                        save_to_excel(st.session_state.projects)
+                        save_to_excel_async(st.session_state.projects)
                     if _created:
                         st.success(f"Created {len(_created)} user(s): {', '.join(_created)}")
                     if _skipped:
@@ -2478,7 +2606,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                     try:
                         auth.create_user(nu_name.strip(), nu_email.strip(), nu_pass, nu_role)
                         sync_users_excel({nu_email.strip().lower(): nu_pass})
-                        save_to_excel(st.session_state.projects)
+                        save_to_excel_async(st.session_state.projects)
                         st.session_state.toast = {"msg": f'User "{nu_name.strip()}" created!', "type": "success"}
                         st.rerun()
                     except Exception as _ex:
@@ -2510,7 +2638,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                         try:
                             auth.update_user(st.session_state.user_edit_id, _eu_name, _eu_email, _eu_role)
                             sync_users_excel()
-                            save_to_excel(st.session_state.projects)
+                            save_to_excel_async(st.session_state.projects)
                             st.session_state.user_edit_id = None
                             st.session_state.toast = {"msg": f'User "{_eu_name.strip()}" updated!', "type": "success"}
                             st.rerun()
@@ -2587,7 +2715,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                 if _u["id"] != cu["id"]:
                     auth.set_active(_u["id"], not _u["is_active"])
                     sync_users_excel()
-                    save_to_excel(st.session_state.projects)
+                    save_to_excel_async(st.session_state.projects)
                     st.session_state.toast = {"msg": f'User {"deactivated" if _u["is_active"] else "activated"}.', "type": "info"}
                     st.rerun()
                 else:
@@ -2599,7 +2727,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
                 if _u["id"] != cu["id"]:
                     auth.delete_user(_u["id"])
                     sync_users_excel()
-                    save_to_excel(st.session_state.projects)
+                    save_to_excel_async(st.session_state.projects)
                     st.session_state.toast = {"msg": f'User "{_u["name"]}" deleted.', "type": "info"}
                     st.rerun()
                 else:
@@ -2682,6 +2810,14 @@ elif st.session_state.active_tab == "tasks":
 
     if role == "employee":
         # ── Employee view: own tasks + progress update ────────────────────────
+        _tp = st.session_state.get("task_popup")
+        if _tp == "success":
+            st.markdown(_POPUP_SUCCESS, unsafe_allow_html=True)
+            st.session_state.task_popup = None
+        elif _tp == "error":
+            st.markdown(_POPUP_ERROR, unsafe_allow_html=True)
+            st.session_state.task_popup = None
+
         st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">My Tasks</h2>', unsafe_allow_html=True)
         st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Tasks assigned to you — update your progress here</p>', unsafe_allow_html=True)
 
@@ -2725,7 +2861,7 @@ elif st.session_state.active_tab == "tasks":
                                 _t["assigned_by_email"], _t["assigned_by"],
                                 cu["name"], _t["title"],
                                 _new_stat, _new_prog, _new_comment)
-                        save_to_excel(st.session_state.projects)
+                        save_to_excel_async(st.session_state.projects)
                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
 
@@ -2758,8 +2894,17 @@ elif st.session_state.active_tab == "tasks":
                         if st.button("Submit Weekly Update", key=f"wc_sub_{_t['id']}",
                                      use_container_width=True):
                             if _wc_text.strip():
-                                auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
-                                st.session_state.toast = {"msg": "Weekly update submitted!", "type": "success"}
+                                _cph = st.empty()
+                                _cph.markdown(_POPUP_LOADING, unsafe_allow_html=True)
+                                try:
+                                    _saved = auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
+                                    if _saved:
+                                        save_to_excel_async(st.session_state.projects)
+                                        st.session_state.task_popup = "success"
+                                    else:
+                                        st.session_state.task_popup = "error"
+                                except Exception:
+                                    st.session_state.task_popup = "error"
                                 st.rerun()
                             else:
                                 st.warning("Please enter a comment before submitting.")
@@ -2770,6 +2915,13 @@ elif st.session_state.active_tab == "tasks":
         st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Assign and track tasks for your team</p>', unsafe_allow_html=True)
 
         def _render_my_tasks_panel(key_prefix):
+            _tp = st.session_state.get("task_popup")
+            if _tp == "success":
+                st.markdown(_POPUP_SUCCESS, unsafe_allow_html=True)
+                st.session_state.task_popup = None
+            elif _tp == "error":
+                st.markdown(_POPUP_ERROR, unsafe_allow_html=True)
+                st.session_state.task_popup = None
             _my_tasks = auth.get_user_tasks(cu["id"])
             if not _my_tasks:
                 st.info("No tasks assigned to you yet.")
@@ -2807,7 +2959,7 @@ elif st.session_state.active_tab == "tasks":
                     )
                     if st.button("Save Update", type="primary", key=f"{key_prefix}save_{_t['id']}", use_container_width=True):
                         auth.update_task_progress(_t["id"], _new_prog, _new_stat, _new_comment)
-                        save_to_excel(st.session_state.projects)
+                        save_to_excel_async(st.session_state.projects)
                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
 
@@ -2840,13 +2992,31 @@ elif st.session_state.active_tab == "tasks":
                         if st.button("Submit Weekly Update", key=f"{key_prefix}wc_sub_{_t['id']}",
                                      use_container_width=True):
                             if _wc_text.strip():
-                                auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
-                                st.session_state.toast = {"msg": "Weekly update submitted!", "type": "success"}
+                                _cph2 = st.empty()
+                                _cph2.markdown(_POPUP_LOADING, unsafe_allow_html=True)
+                                try:
+                                    _saved2 = auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
+                                    if _saved2:
+                                        save_to_excel_async(st.session_state.projects)
+                                        st.session_state.task_popup = "success"
+                                    else:
+                                        st.session_state.task_popup = "error"
+                                except Exception:
+                                    st.session_state.task_popup = "error"
                                 st.rerun()
                             else:
                                 st.warning("Please enter a comment before submitting.")
 
         def _render_all_tasks_panel():
+            # ── Popup overlay (success / error from previous action) ───────────
+            _tp = st.session_state.get("task_popup")
+            if _tp == "success":
+                st.markdown(_POPUP_SUCCESS, unsafe_allow_html=True)
+                st.session_state.task_popup = None
+            elif _tp == "error":
+                st.markdown(_POPUP_ERROR, unsafe_allow_html=True)
+                st.session_state.task_popup = None
+
             with st.expander("Assign New Task", expanded=False):
                 # Show which email will be used to send the task notification
                 _preview_cfg = auth.get_email_settings()
@@ -2885,16 +3055,29 @@ elif st.session_state.active_tab == "tasks":
                         else:
                             _sel_idx = _emp_opts.index(_emp_sel)
                             _sel_emp = _assignable[_sel_idx]
-                            auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
-                            _mail_ok, _mail_err = email_utils.send_task_assigned_email(
-                                _sel_emp["email"], _sel_emp["name"],
-                                _nt_title, cu["name"], _nt_due.strip())
-                            save_to_excel(st.session_state.projects)
-                            if not _mail_ok and _mail_err:
-                                st.warning(f"Task assigned but email failed: {_mail_err}. Check your Outlook settings in the Settings tab.")
-                            else:
-                                st.session_state.toast = {"msg": f'Task assigned to {_sel_emp["name"]}!', "type": "success"}
-                                st.rerun()
+                            # Show loading overlay immediately (streams to browser before work starts)
+                            _loading_ph = st.empty()
+                            _loading_ph.markdown(_POPUP_LOADING, unsafe_allow_html=True)
+                            try:
+                                auth.create_task(_nt_title, _nt_desc or "", _sel_emp["id"], cu["id"], _nt_due.strip(), _nt_start.strip())
+                                save_to_excel_async(st.session_state.projects)
+                                # Email sends in background — does not block task creation
+                                _emp_email = _sel_emp["email"]
+                                _emp_name  = _sel_emp["name"]
+                                _by_name   = cu["name"]
+                                _due_str   = _nt_due.strip()
+                                _title_str = _nt_title
+                                def _send_mail():
+                                    try:
+                                        email_utils.send_task_assigned_email(
+                                            _emp_email, _emp_name, _title_str, _by_name, _due_str)
+                                    except Exception:
+                                        pass
+                                threading.Thread(target=_send_mail, daemon=True).start()
+                                st.session_state.task_popup = "success"
+                            except Exception:
+                                st.session_state.task_popup = "error"
+                            st.rerun()
 
             _all_tasks = auth.get_all_tasks()
             st.markdown(
@@ -2955,6 +3138,7 @@ elif st.session_state.active_tab == "tasks":
                         _tc[6].markdown(cell(_t["due_date"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
                         _edit_key = f"editing_task_{tab_sfx}_{_t['id']}"
                         with _tc[7]:
+                            st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
                             if st.button("✏️", key=f"edit_btn_{tab_sfx}_{_t['id']}", help="Edit task", use_container_width=True):
                                 st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
                                 st.rerun()
@@ -2962,7 +3146,7 @@ elif st.session_state.active_tab == "tasks":
                             st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
                             if st.button("🗑", key=f"dt_{tab_sfx}_{_t['id']}", help="Delete task", use_container_width=True):
                                 auth.delete_task(_t["id"])
-                                save_to_excel(st.session_state.projects)
+                                save_to_excel_async(st.session_state.projects)
                                 st.session_state.toast = {"msg": "Task deleted.", "type": "info"}
                                 st.rerun()
 
@@ -2986,7 +3170,7 @@ elif st.session_state.active_tab == "tasks":
                                         _e_start_str = _e_start_dt.strftime("%Y-%m-%d") if _e_start_dt else ""
                                         _e_due_str   = _e_due_dt.strftime("%Y-%m-%d")   if _e_due_dt   else ""
                                         auth.update_task_meta(_t["id"], _e_title, _e_desc or "", _e_start_str, _e_due_str)
-                                        save_to_excel(st.session_state.projects)
+                                        save_to_excel_async(st.session_state.projects)
                                         st.session_state[_edit_key] = False
                                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                                         st.rerun()
