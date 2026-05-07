@@ -2847,20 +2847,13 @@ elif st.session_state.active_tab == "tasks":
                         _new_prog = st.slider("Progress %", 0, 100, _pct, step=5, key=f"prog_{_t['id']}")
                         _stat_idx = auth.TASK_STATUSES.index(_t["status"]) if _t["status"] in auth.TASK_STATUSES else 0
                         _new_stat = st.selectbox("Status", auth.TASK_STATUSES, index=_stat_idx, key=f"stat_{_t['id']}")
-                    _new_comment = st.text_area(
-                        "Comments / Notes",
-                        value=_t.get("comment", ""),
-                        key=f"comment_{_t['id']}",
-                        height=80,
-                        placeholder="Add a note, update, or blocker…",
-                    )
                     if st.button("Save Update", type="primary", key=f"save_p_{_t['id']}", use_container_width=True):
-                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _new_comment)
+                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _t.get("comment", ""))
                         if _t.get("assigned_by_email"):
                             email_utils.send_task_updated_email(
                                 _t["assigned_by_email"], _t["assigned_by"],
                                 cu["name"], _t["title"],
-                                _new_stat, _new_prog, _new_comment)
+                                _new_stat, _new_prog, "")
                         save_to_excel_async(st.session_state.projects)
                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
@@ -2950,15 +2943,8 @@ elif st.session_state.active_tab == "tasks":
                             _new_prog = st.slider("Progress %", 0, 100, _pct, step=5, key=f"{key_prefix}prog_{_t['id']}")
                             _stat_idx = auth.TASK_STATUSES.index(_t["status"]) if _t["status"] in auth.TASK_STATUSES else 0
                             _new_stat = st.selectbox("Status", auth.TASK_STATUSES, index=_stat_idx, key=f"{key_prefix}stat_{_t['id']}")
-                    _new_comment = st.text_area(
-                        "Comments / Notes",
-                        value=_t.get("comment", ""),
-                        key=f"{key_prefix}comment_{_t['id']}",
-                        height=80,
-                        placeholder="Add a note, update, or blocker…",
-                    )
                     if st.button("Save Update", type="primary", key=f"{key_prefix}save_{_t['id']}", use_container_width=True):
-                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _new_comment)
+                        auth.update_task_progress(_t["id"], _new_prog, _new_stat, _t.get("comment", ""))
                         save_to_excel_async(st.session_state.projects)
                         st.session_state.toast = {"msg": "Task updated!", "type": "success"}
                         st.rerun()
