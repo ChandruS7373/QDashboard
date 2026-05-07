@@ -4,6 +4,8 @@ import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+PORTAL_URL = "https://q-dashboard.streamlit.app/"
+
 
 def _smtp_creds():
     # 1. Global DB settings (configured via admin Users tab)
@@ -104,6 +106,9 @@ def send_otp_email(to_email: str, user_name: str, otp: str) -> tuple[bool, str]:
   <p style="color:#94A3B8;font-size:12px;margin:0">
     If you did not request a password reset, you can safely ignore this email.
   </p>
+  <p style="color:#94A3B8;font-size:12px;margin:8px 0 0">
+    <a href="{PORTAL_URL}" style="color:#3B82F6">Back to Qualesce Portal</a>
+  </p>
 </div>
 """
     return send_email(to_email, subject, body)
@@ -126,7 +131,7 @@ def send_task_assigned_email(emp_email: str, emp_name: str, task_title: str,
     <div style="color:#64748B;font-size:13px">{due_line}</div>
   </div>
   <p style="color:#94A3B8;font-size:12px;margin:0">
-    Log in to Qualesce to view your task details and update your progress.
+    Log in to <a href="{PORTAL_URL}" style="color:#3B82F6;font-weight:600">Qualesce Portal</a> to view your task details and update your progress.
   </p>
 </div>
 """
@@ -172,7 +177,7 @@ def send_task_updated_email(assigner_email: str, assigner_name: str, emp_name: s
     {comment_block}
   </div>
   <p style="color:#94A3B8;font-size:12px;margin:0">
-    Log in to Qualesce to view the full update and task history.
+    Log in to <a href="{PORTAL_URL}" style="color:#3B82F6;font-weight:600">Qualesce Portal</a> to view the full update and task history.
   </p>
 </div>
 """

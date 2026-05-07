@@ -29,6 +29,20 @@ USERS_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "use
 EXCEL_COLS = ["id","name","client","lead","employee","status","proj_type","start","end","due_date","po","desc",
               "manual_hrs","auto_hrs","cost_per_hr","hours_saved","cost_saved","roi_pct","is_new","is_active"]
 
+PORTAL_URL = "https://q-dashboard.streamlit.app/"
+
+def fmt_date(d: str) -> str:
+    """Normalise any date string to DD-MM-YYYY for display. Returns original if unparseable."""
+    if not d or not str(d).strip():
+        return ""
+    s = str(d).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+    return s
+
 # ── BASE DATA ─────────────────────────────────────────────────────────────────
 BASE_PROJECTS = [
     {"id":1,  "name":"Raychem GATE Entry and GRN Process - Part A",     "client":"Raychem",                 "employee":"Nandukanth & Radhika","start":"20/07/2025","end":"",           "status":"R&M",          "po":"456788","desc":"GATE Entry and GRN Creation",                               "manual_hrs":"","auto_hrs":"","cost_per_hr":"","hours_saved":"","cost_saved":"","roi_pct":"","is_new":False,"is_active":True},
@@ -561,6 +575,11 @@ section[data-testid="stSidebar"]{display:none!important}
 .kpi-num{font-family:'Courier New',Courier,monospace;font-size:28px;font-weight:700;margin:8px 0 4px;letter-spacing:-1px}
 .kpi-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94A3B8}
 
+/* ── Generic content card ── */
+.q-card{
+  background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;
+  padding:18px 20px;box-shadow:0 2px 8px rgba(15,23,42,.07)}
+
 /* ── Top Navigation ── */
 .q-nav{
   background:#0F172A;
@@ -569,6 +588,7 @@ section[data-testid="stSidebar"]{display:none!important}
   height:62px;position:sticky;top:0;z-index:100;
   box-shadow:0 2px 12px rgba(0,0,0,.30);
   margin:0 -1.5rem 24px}
+.q-nav-btns{display:flex;align-items:center;gap:8px}
 
 /* ── Slicer rows ── */
 .srow{
@@ -666,8 +686,8 @@ div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="
 .login-hint{text-align:center;font-size:11px;color:#94A3B8;margin-top:12px}
 
 /* ── Task progress bar ── */
-.progress-bar-outer{background:#E2E8F0;border-radius:10px;height:7px;overflow:hidden;margin:4px 0}
-.progress-bar-inner{height:7px;border-radius:10px}
+.progress-bar-outer{background:#E2E8F0;border-radius:99px;height:7px;overflow:hidden;margin:4px 0}
+.progress-bar-inner{height:7px;border-radius:99px}
 
 /* ── Role badge ── */
 .role-badge{font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase}
@@ -1703,8 +1723,8 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                         roi_badge = f'<span style="font-size:10px;background:#064E3B;color:#10B981;border-radius:4px;padding:2px 8px;font-weight:800;margin-left:6px">ROI {esc(str(row["roi_pct"]))}%</span>'
                     new_badge  = '<span style="font-size:9px;background:#10B981;color:#fff;border-radius:4px;padding:1px 5px;font-weight:800;margin-left:4px">NEW</span>' if is_new(row) else ""
                     _lead      = esc(str(row.get("lead","")).strip())
-                    _start     = esc(str(row.get("start","")))
-                    _end       = esc(str(row.get("end","")) or "Ongoing")
+                    _start     = esc(fmt_date(str(row.get("start",""))))
+                    _end       = esc(fmt_date(str(row.get("end",""))) or "Ongoing")
                     _due_raw   = str(row.get("due_date","")).strip()
                     _po        = esc(str(row.get("po","")))
                     _desc      = esc(str(row.get("desc","")))
@@ -1718,7 +1738,7 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                     if _due_raw:
                         _due_d = _parse_dmy(_due_raw)
                         _due_color = "#DC2626" if (_due_d and (_due_d - date.today()).days < 0) else "#92400E" if (_due_d and (_due_d - date.today()).days <= 7) else "#64748B"
-                        meta_spans.append(f'<span>Due: <b style="color:{_due_color}">{esc(_due_raw)}</b></span>')
+                        meta_spans.append(f'<span>Due: <b style="color:{_due_color}">{esc(fmt_date(_due_raw))}</b></span>')
                     if _po:
                         meta_spans.append(f'<span>PO #{_po}</span>')
                     meta_html = "".join(meta_spans)
@@ -1882,8 +1902,8 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                 f'<div style="width:9%">{lead_html}</div>'
                 f'<div style="width:14%;font-size:11px;color:#374151">{esc(str(row.get("employee","")))}</div>'
                 f'<div style="width:6%">{_type_badge(str(row.get("proj_type","")).strip()) or cell("—","10px","#CBD5E1")}</div>'
-                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(row.get("start","")))}</div>'
-                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(row.get("end","")))}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(fmt_date(str(row.get("start",""))))}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(fmt_date(str(row.get("end",""))))}</div>'
                 f'<div style="width:8%">{_due_cell(str(row.get("due_date","")))}</div>'
                 f'<div style="width:6%;font-size:11px;color:#94A3B8">{esc(str(row.get("po","")))}</div>'
                 f'<div style="width:5%">{active_html}</div>'
@@ -2019,8 +2039,8 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
                 f'<div style="width:12%;font-size:11px;color:#374151">{esc(str(_row.get("employee","")))}</div>'
                 f'<div style="width:6%">{_ps_type_badge(str(_row.get("proj_type","")).strip())}</div>'
                 f'<div style="width:10%">{badge_html(str(_row.get("status","")))}</div>'
-                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(_row.get("start","")))}</div>'
-                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(str(_row.get("end","")))}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(fmt_date(str(_row.get("start",""))))}</div>'
+                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(fmt_date(str(_row.get("end",""))))}</div>'
                 f'<div style="width:8%">{_due_cell(str(_row.get("due_date","")))}</div>'
                 f'<div style="width:11%">{_notes_disp}</div>'
                 f'</div>',
@@ -2844,9 +2864,9 @@ elif st.session_state.active_tab == "tasks":
                             st.markdown(f'<div style="font-size:12px;color:#64748B;margin-bottom:6px;font-style:italic">{esc(_t["description"])}</div>', unsafe_allow_html=True)
                         _date_meta = f'Assigned by: <b>{esc(_t["assigned_by"])}</b>'
                         if _t.get("start_date"):
-                            _date_meta += f' &nbsp;·&nbsp; Start: <b>{esc(_t["start_date"])}</b>'
+                            _date_meta += f' &nbsp;·&nbsp; Start: <b>{esc(fmt_date(_t["start_date"]))}</b>'
                         if _t.get("due_date"):
-                            _date_meta += f' &nbsp;·&nbsp; Due: <b>{esc(_t["due_date"])}</b>'
+                            _date_meta += f' &nbsp;·&nbsp; Due: <b>{esc(fmt_date(_t["due_date"]))}</b>'
                         st.markdown(f'<div style="font-size:11px;color:#64748B;margin-bottom:6px">{_date_meta}</div>', unsafe_allow_html=True)
                         st.markdown(f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_pct}%;background:{_bar_c}"></div></div>'
                                     f'<div style="font-size:10px;color:#64748B;margin-top:2px">{_pct}% complete</div>', unsafe_allow_html=True)
@@ -2871,18 +2891,20 @@ elif st.session_state.active_tab == "tasks":
                     _wk_label = (f"{date.fromisoformat(_wk_start).strftime('%d %b')} – "
                                  f"{_wk_end_dt.strftime('%d %b %Y')}")
                     st.markdown(
-                        f'<div style="font-size:11px;font-weight:700;color:#475569;'
+                        f'<div style="font-size:11px;font-weight:800;color:#334155;'
                         f'border-top:1px solid #E2E8F0;margin-top:10px;padding-top:10px">'
                         f'Weekly Update — {_wk_label}</div>',
                         unsafe_allow_html=True)
                     _existing_wc = auth.get_user_week_comment(_t["id"], cu["id"], _wk_start)
                     if _existing_wc:
+                        _wc_ca = str(_existing_wc["created_at"])
+                        _wc_disp = fmt_date(_wc_ca[:10]) + " " + _wc_ca[11:16] if len(_wc_ca) >= 16 else _wc_ca
                         st.markdown(
-                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:8px;'
-                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:4px">'
+                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:10px;'
+                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:8px">'
                             f'<span style="font-weight:700;color:#10B981">Submitted ✓</span>&nbsp; '
                             f'{esc(_existing_wc["comment"])}'
-                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_existing_wc["created_at"])}</span>'
+                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_wc_disp)}</span>'
                             f'</div>',
                             unsafe_allow_html=True)
                     else:
@@ -2938,9 +2960,9 @@ elif st.session_state.active_tab == "tasks":
                                 st.markdown(f'<div style="font-size:12px;color:#64748B;margin-bottom:6px;font-style:italic">{esc(_t["description"])}</div>', unsafe_allow_html=True)
                             _lmeta = f'Assigned by: <b>{esc(_t["assigned_by"])}</b>'
                             if _t.get("start_date"):
-                                _lmeta += f' &nbsp;·&nbsp; Start: <b>{esc(_t["start_date"])}</b>'
+                                _lmeta += f' &nbsp;·&nbsp; Start: <b>{esc(fmt_date(_t["start_date"]))}</b>'
                             if _t.get("due_date"):
-                                _lmeta += f' &nbsp;·&nbsp; Due: <b>{esc(_t["due_date"])}</b>'
+                                _lmeta += f' &nbsp;·&nbsp; Due: <b>{esc(fmt_date(_t["due_date"]))}</b>'
                             st.markdown(f'<div style="font-size:11px;color:#64748B;margin-bottom:6px">{_lmeta}</div>', unsafe_allow_html=True)
                             st.markdown(
                                 f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_pct}%;background:{_bar_c}"></div></div>'
@@ -2962,18 +2984,20 @@ elif st.session_state.active_tab == "tasks":
                     _wk_label = (f"{date.fromisoformat(_wk_start).strftime('%d %b')} – "
                                  f"{_wk_end_dt.strftime('%d %b %Y')}")
                     st.markdown(
-                        f'<div style="font-size:11px;font-weight:700;color:#475569;'
+                        f'<div style="font-size:11px;font-weight:800;color:#334155;'
                         f'border-top:1px solid #E2E8F0;margin-top:10px;padding-top:10px">'
                         f'Weekly Update — {_wk_label}</div>',
                         unsafe_allow_html=True)
                     _existing_wc = auth.get_user_week_comment(_t["id"], cu["id"], _wk_start)
                     if _existing_wc:
+                        _wc_ca2 = str(_existing_wc["created_at"])
+                        _wc_disp2 = fmt_date(_wc_ca2[:10]) + " " + _wc_ca2[11:16] if len(_wc_ca2) >= 16 else _wc_ca2
                         st.markdown(
-                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:8px;'
-                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:4px">'
+                            f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:10px;'
+                            f'padding:10px 14px;font-size:12px;color:#64748B;margin-top:8px">'
                             f'<span style="font-weight:700;color:#10B981">Submitted ✓</span>&nbsp; '
                             f'{esc(_existing_wc["comment"])}'
-                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_existing_wc["created_at"])}</span>'
+                            f'<br><span style="font-size:10px;color:#94A3B8">{esc(_wc_disp2)}</span>'
                             f'</div>',
                             unsafe_allow_html=True)
                     else:
@@ -3127,8 +3151,8 @@ elif st.session_state.active_tab == "tasks":
                             f'<div class="progress-bar-outer"><div class="progress-bar-inner" style="width:{_tpct}%;background:{_tbar}"></div></div>'
                             f'<div style="font-size:10px;color:#64748B">{_tpct}%</div>',
                             unsafe_allow_html=True)
-                        _tc[5].markdown(cell(_t.get("start_date") or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
-                        _tc[6].markdown(cell(_t["due_date"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                        _tc[5].markdown(cell(fmt_date(_t.get("start_date") or "") or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                        _tc[6].markdown(cell(fmt_date(_t["due_date"]) or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
                         _edit_key = f"editing_task_{tab_sfx}_{_t['id']}"
                         with _tc[7]:
                             st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
@@ -3188,7 +3212,8 @@ elif st.session_state.active_tab == "tasks":
                                     _wr[0].markdown(f'<span style="font-size:10px;color:#475569">{_wk_d.strftime("%d %b")}–{_wk_end.strftime("%d %b")}</span>', unsafe_allow_html=True)
                                     _wr[1].markdown(f'<span style="font-size:11px;color:#111827">{esc(_wc["comment"])}</span>', unsafe_allow_html=True)
                                     _wr[2].markdown(f'<span style="font-size:11px;color:#374151">{esc(_wc["user_name"])}</span>', unsafe_allow_html=True)
-                                    _wr[3].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_wc["created_at"][:16])}</span>', unsafe_allow_html=True)
+                                    _wc_ts = str(_wc["created_at"]); _wc_ts_disp = fmt_date(_wc_ts[:10]) + " " + _wc_ts[11:16] if len(_wc_ts) >= 16 else _wc_ts
+                                    _wr[3].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_wc_ts_disp)}</span>', unsafe_allow_html=True)
 
                 def _render_tab_with_filters(base_tasks, tab_sfx):
                     _emp_names = sorted({t["assigned_to"] for t in base_tasks})
@@ -3244,7 +3269,8 @@ elif st.session_state.active_tab == "tasks":
                             _ar[1].markdown(f'<span style="font-size:11px;font-weight:600;color:#111827">{esc(_ac["task_title"])}</span>', unsafe_allow_html=True)
                             _ar[2].markdown(f'<span style="font-size:11px;color:#374151">{esc(_ac["user_name"])}</span>', unsafe_allow_html=True)
                             _ar[3].markdown(f'<span style="font-size:11px;color:#64748B">{esc(_ac["comment"][:80])}{"…" if len(_ac["comment"])>80 else ""}</span>', unsafe_allow_html=True)
-                            _ar[4].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_ac["created_at"][:16])}</span>', unsafe_allow_html=True)
+                            _ac_ts = str(_ac["created_at"]); _ac_ts_disp = fmt_date(_ac_ts[:10]) + " " + _ac_ts[11:16] if len(_ac_ts) >= 16 else _ac_ts
+                            _ar[4].markdown(f'<span style="font-size:10px;color:#94A3B8">{esc(_ac_ts_disp)}</span>', unsafe_allow_html=True)
 
         if role == "lead":
             _ltab_mine, _ltab_all = st.tabs(["My Tasks", "All Tasks"])

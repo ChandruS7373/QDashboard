@@ -478,7 +478,7 @@ def sync_users_from_excel(users_excel_path: str):
 
 
 def sync_comments_from_excel(excel_path: str):
-    """Import comments from the Excel Comments sheet into SQLite on startup."""
+    """Bidirectional sync: import missing comments from Excel and remove ones deleted from Excel."""
     if not excel_path or not os.path.exists(excel_path):
         return
     try:
@@ -486,12 +486,14 @@ def sync_comments_from_excel(excel_path: str):
         df = pd.read_excel(excel_path, sheet_name="Comments", dtype=str, engine="openpyxl").fillna("")
     except Exception:
         return
-    if df.empty:
-        return
+
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id, email FROM users")
     email_map = {row[1].strip().lower(): row[0] for row in c.fetchall()}
+
+    # Build set of (task_id, user_id, week_start) from Excel
+    excel_keys = set()
     for _, row in df.iterrows():
         try:
             task_id = int(float(str(row.get("task_id", 0) or 0)))
@@ -507,12 +509,21 @@ def sync_comments_from_excel(excel_path: str):
             c.execute("SELECT id FROM tasks WHERE id=?", (task_id,))
             if not c.fetchone():
                 continue
+            excel_keys.add((task_id, user_id, week_start))
             c.execute(
                 "INSERT OR IGNORE INTO task_comments (task_id, user_id, comment, week_start, created_at) VALUES (?,?,?,?,?)",
                 (task_id, user_id, comment_text, week_start, created_at),
             )
         except Exception:
             continue
+
+    # Remove SQLite comments not present in Excel (deleted from Excel)
+    c.execute("SELECT id, task_id, user_id, week_start FROM task_comments")
+    for row in c.fetchall():
+        key = (row[1], row[2], row[3])
+        if key not in excel_keys:
+            c.execute("DELETE FROM task_comments WHERE id=?", (row[0],))
+
     conn.commit()
     conn.close()
 
