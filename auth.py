@@ -440,6 +440,83 @@ def sync_tasks_from_excel(excel_path: str):
     conn.close()
 
 
+def sync_users_from_excel(users_excel_path: str):
+    """Import users from users.xlsx into SQLite so they can log in after a restart."""
+    if not users_excel_path or not os.path.exists(users_excel_path):
+        return
+    try:
+        import pandas as pd
+        df = pd.read_excel(users_excel_path, dtype=str, engine="openpyxl").fillna("")
+    except Exception:
+        return
+    if df.empty:
+        return
+    conn = get_conn()
+    c = conn.cursor()
+    for _, row in df.iterrows():
+        try:
+            name = str(row.get("Name", "")).strip()
+            email = str(row.get("Email", "")).strip().lower()
+            role = str(row.get("Role", "employee")).strip()
+            password = str(row.get("Password", "")).strip()
+            active_str = str(row.get("Active", "Yes")).strip().lower()
+            is_active = 1 if active_str in ("yes", "1", "true") else 0
+            if not name or not email or not password:
+                continue
+            if role not in ROLES:
+                role = "employee"
+            c.execute("SELECT id FROM users WHERE email=?", (email,))
+            if not c.fetchone():
+                c.execute(
+                    "INSERT INTO users (name, email, password_hash, role, is_active, created_at) VALUES (?,?,?,?,?,?)",
+                    (name, email, _hash(password), role, is_active, _now()),
+                )
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+
+
+def sync_comments_from_excel(excel_path: str):
+    """Import comments from the Excel Comments sheet into SQLite on startup."""
+    if not excel_path or not os.path.exists(excel_path):
+        return
+    try:
+        import pandas as pd
+        df = pd.read_excel(excel_path, sheet_name="Comments", dtype=str, engine="openpyxl").fillna("")
+    except Exception:
+        return
+    if df.empty:
+        return
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, email FROM users")
+    email_map = {row[1].strip().lower(): row[0] for row in c.fetchall()}
+    for _, row in df.iterrows():
+        try:
+            task_id = int(float(str(row.get("task_id", 0) or 0)))
+            user_email = str(row.get("employee_email", "")).strip().lower()
+            comment_text = str(row.get("comment", "")).strip()
+            week_start = str(row.get("week_start", "")).strip()
+            created_at = str(row.get("created_at", "")).strip() or _now()
+            if not task_id or not user_email or not comment_text or not week_start:
+                continue
+            user_id = email_map.get(user_email)
+            if not user_id:
+                continue
+            c.execute("SELECT id FROM tasks WHERE id=?", (task_id,))
+            if not c.fetchone():
+                continue
+            c.execute(
+                "INSERT OR IGNORE INTO task_comments (task_id, user_id, comment, week_start, created_at) VALUES (?,?,?,?,?)",
+                (task_id, user_id, comment_text, week_start, created_at),
+            )
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+
+
 def get_user_tasks(user_id: int) -> list:
     conn = get_conn()
     c = conn.cursor()

@@ -406,9 +406,11 @@ def md_to_html(text: str) -> str:
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 if "projects" not in st.session_state:
     st.session_state.projects = load_from_excel()
-    # Import tasks from Excel Tasks sheet into DB on first load
+    # Sync all data from Excel into SQLite on first load (order matters: users → tasks → comments)
     if "excel_tasks_imported" not in st.session_state:
+        auth.sync_users_from_excel(USERS_EXCEL_PATH)
         auth.sync_tasks_from_excel(EXCEL_PATH)
+        auth.sync_comments_from_excel(EXCEL_PATH)
         st.session_state.excel_tasks_imported = True
 if "is_active" not in st.session_state.projects.columns:
     st.session_state.projects["is_active"] = True
@@ -2892,7 +2894,7 @@ elif st.session_state.active_tab == "tasks":
                                 try:
                                     _saved = auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
                                     if _saved:
-                                        save_to_excel_async(st.session_state.projects)
+                                        save_to_excel(st.session_state.projects)
                                         st.session_state.task_popup = "success"
                                     else:
                                         st.session_state.task_popup = "error"
@@ -2983,7 +2985,7 @@ elif st.session_state.active_tab == "tasks":
                                 try:
                                     _saved2 = auth.add_task_comment(_t["id"], cu["id"], _wc_text, _wk_start)
                                     if _saved2:
-                                        save_to_excel_async(st.session_state.projects)
+                                        save_to_excel(st.session_state.projects)
                                         st.session_state.task_popup = "success"
                                     else:
                                         st.session_state.task_popup = "error"
