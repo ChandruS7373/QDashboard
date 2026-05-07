@@ -11,6 +11,7 @@ from datetime import datetime, date, timedelta
 from jinja2 import Template
 import auth
 import email_utils
+import gsheets
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -190,12 +191,22 @@ def save_to_excel(df: pd.DataFrame) -> bool:
     comment_df = pd.DataFrame(comment_records) if comment_records else pd.DataFrame(
         columns=["id","task_id","task_title","employee_name","employee_email","comment","week_start","created_at"]
     )
-    # Write to a temp file first, then atomically replace the live file
+    task_df_excel = task_df.drop(columns=["comment"], errors="ignore")
+    if gsheets.is_configured():
+        return gsheets.write_all({
+            "Project Details": out[EXCEL_COLS],
+            "Presales_POC": presales_df,
+            "License": license_df,
+            "Sold_License": sold_df,
+            "Users": user_df,
+            "Tasks": task_df_excel,
+            "Comments": comment_df,
+        })
+    # Fall back to local file
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", dir=os.path.dirname(EXCEL_PATH))
     os.close(tmp_fd)
     _moved = False
     try:
-        task_df_excel = task_df.drop(columns=["comment"], errors="ignore")
         with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
             out[EXCEL_COLS].to_excel(writer, sheet_name="Project Details", index=False)
             presales_df.to_excel(writer, sheet_name="Presales_POC", index=False)
@@ -231,6 +242,13 @@ def save_to_excel_async(df: pd.DataFrame):
     threading.Thread(target=_write, daemon=True).start()
 
 def load_from_excel() -> pd.DataFrame:
+    if gsheets.is_configured():
+        df = gsheets.read_sheet("Project Details")
+        if not df.empty:
+            for col in EXCEL_COLS:
+                if col not in df.columns:
+                    df[col] = ""
+            return df
     if os.path.exists(EXCEL_PATH):
         try:
             return pd.read_excel(EXCEL_PATH, sheet_name="Project Details", dtype=str, engine="openpyxl").fillna("")
@@ -238,7 +256,6 @@ def load_from_excel() -> pd.DataFrame:
             try:
                 return pd.read_excel(EXCEL_PATH, dtype=str, engine="openpyxl").fillna("")
             except Exception:
-                # File is corrupted — back it up and rebuild from BASE_PROJECTS
                 import shutil
                 try:
                     shutil.move(EXCEL_PATH, EXCEL_PATH + ".corrupted.bak")
@@ -249,12 +266,23 @@ def load_from_excel() -> pd.DataFrame:
     return df
 
 def excel_mtime() -> float:
+    if gsheets.is_configured():
+        return 0.0
     return os.path.getmtime(EXCEL_PATH) if os.path.exists(EXCEL_PATH) else 0.0
 
 
 # ── USERS EXCEL HELPERS ───────────────────────────────────────────────────────
 def _load_users_excel_passwords() -> dict:
-    """Return {email_lower: plain_password} from users.xlsx if the file exists."""
+    """Return {email_lower: plain_password} from Google Sheets (or users.xlsx fallback)."""
+    if gsheets.is_configured():
+        try:
+            df = gsheets.read_sheet("Users")
+            if not df.empty and "Email" in df.columns and "Password" in df.columns:
+                return {str(r["Email"]).strip().lower(): str(r["Password"])
+                        for _, r in df.iterrows() if str(r["Email"]).strip()}
+        except Exception:
+            pass
+        return {}
     if not os.path.exists(USERS_EXCEL_PATH):
         return {}
     try:
@@ -284,7 +312,11 @@ def sync_users_excel(password_updates: dict = None):
         }
         for u in users
     ]
-    pd.DataFrame(rows).to_excel(USERS_EXCEL_PATH, index=False, engine="openpyxl")
+    users_df = pd.DataFrame(rows)
+    if gsheets.is_configured():
+        gsheets.write_all({"Users": users_df})
+    else:
+        users_df.to_excel(USERS_EXCEL_PATH, index=False, engine="openpyxl")
 
 
 def compute_roi(manual, auto, cost):
@@ -432,11 +464,22 @@ def md_to_html(text: str) -> str:
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 if "projects" not in st.session_state:
     st.session_state.projects = load_from_excel()
-    # Sync all data from Excel into SQLite on first load (order matters: users → tasks → comments)
+    # Sync all data into SQLite on first load (order matters: users → tasks → comments)
     if "excel_tasks_imported" not in st.session_state:
-        auth.sync_users_from_excel(USERS_EXCEL_PATH)
-        auth.sync_tasks_from_excel(EXCEL_PATH)
-        auth.sync_comments_from_excel(EXCEL_PATH)
+        if gsheets.is_configured():
+            _u = gsheets.read_sheet("Users")
+            _t = gsheets.read_sheet("Tasks")
+            _c = gsheets.read_sheet("Comments")
+            if not _u.empty:
+                auth.sync_users_from_df(_u)
+            if not _t.empty:
+                auth.sync_tasks_from_df(_t)
+            if not _c.empty:
+                auth.sync_comments_from_df(_c)
+        else:
+            auth.sync_users_from_excel(USERS_EXCEL_PATH)
+            auth.sync_tasks_from_excel(EXCEL_PATH)
+            auth.sync_comments_from_excel(EXCEL_PATH)
         st.session_state.excel_tasks_imported = True
 if "is_active" not in st.session_state.projects.columns:
     st.session_state.projects["is_active"] = True
@@ -480,6 +523,7 @@ if "user_edit_id"         not in st.session_state: st.session_state.user_edit_id
 if "task_comment_view" not in st.session_state: st.session_state.task_comment_view = None
 if "poc_row_edit"     not in st.session_state: st.session_state.poc_row_edit     = None
 if "task_popup"       not in st.session_state: st.session_state.task_popup       = None
+if "save_popup"       not in st.session_state: st.session_state.save_popup       = None
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def get_stats(d):
@@ -824,6 +868,16 @@ _POPUP_ERROR = (
     '<div class="task-popup-lbl" style="color:#EF4444">Not Assigned</div>'
     '</div></div>'
 )
+_POPUP_SAVED = (
+    '<div class="task-popup-overlay task-popup-auto">'
+    '<div class="task-popup-box">'
+    '<svg class="task-popup-svg" viewBox="0 0 54 54">'
+    '<circle class="tp-circle tp-tick-c" cx="27" cy="27" r="23"/>'
+    '<path class="tp-tick-p" d="M15 28 L23.5 36.5 L39 18"/>'
+    '</svg>'
+    '<div class="task-popup-lbl" style="color:#10B981">Saved!</div>'
+    '</div></div>'
+)
 
 # ── LOGIN GATE ───────────────────────────────────────────────────────────────
 def _render_login():
@@ -1082,7 +1136,16 @@ if role == "admin":
         st.session_state.excel_mtime = excel_mtime()
         ids = pd.to_numeric(st.session_state.projects.get("id", pd.Series([])), errors="coerce").dropna()
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
-        st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
+        if gsheets.is_configured():
+            _u = gsheets.read_sheet("Users"); _t = gsheets.read_sheet("Tasks"); _c = gsheets.read_sheet("Comments")
+            if not _u.empty: auth.sync_users_from_df(_u)
+            if not _t.empty: auth.sync_tasks_from_df(_t)
+            if not _c.empty: auth.sync_comments_from_df(_c)
+        else:
+            auth.sync_users_from_excel(USERS_EXCEL_PATH)
+            auth.sync_tasks_from_excel(EXCEL_PATH)
+            auth.sync_comments_from_excel(EXCEL_PATH)
+        st.session_state.toast = {"msg": "Synced!", "type": "success"}
         st.rerun()
     if nav_c[_n + 2].button("Logout", use_container_width=True, key="nav_logout_admin"):
         st.session_state.current_user = None
@@ -1096,7 +1159,16 @@ elif role in ("lead", "manager"):
         st.session_state.excel_mtime = excel_mtime()
         ids = pd.to_numeric(st.session_state.projects.get("id", pd.Series([])), errors="coerce").dropna()
         st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
-        st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
+        if gsheets.is_configured():
+            _u = gsheets.read_sheet("Users"); _t = gsheets.read_sheet("Tasks"); _c = gsheets.read_sheet("Comments")
+            if not _u.empty: auth.sync_users_from_df(_u)
+            if not _t.empty: auth.sync_tasks_from_df(_t)
+            if not _c.empty: auth.sync_comments_from_df(_c)
+        else:
+            auth.sync_users_from_excel(USERS_EXCEL_PATH)
+            auth.sync_tasks_from_excel(EXCEL_PATH)
+            auth.sync_comments_from_excel(EXCEL_PATH)
+        st.session_state.toast = {"msg": "Synced!", "type": "success"}
         st.rerun()
     if nav_c[_n + 2].button("Logout", use_container_width=True, key="nav_logout_lm"):
         st.session_state.current_user = None
@@ -1105,17 +1177,23 @@ else:
     if nav_c[_n].button("↻", use_container_width=True, key="nav_sync_emp"):
         st.session_state.projects = load_from_excel()
         st.session_state.excel_mtime = excel_mtime()
-        auth.sync_users_from_excel(USERS_EXCEL_PATH)
-        auth.sync_tasks_from_excel(EXCEL_PATH)
-        auth.sync_comments_from_excel(EXCEL_PATH)
-        st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
+        if gsheets.is_configured():
+            _u = gsheets.read_sheet("Users"); _t = gsheets.read_sheet("Tasks"); _c = gsheets.read_sheet("Comments")
+            if not _u.empty: auth.sync_users_from_df(_u)
+            if not _t.empty: auth.sync_tasks_from_df(_t)
+            if not _c.empty: auth.sync_comments_from_df(_c)
+        else:
+            auth.sync_users_from_excel(USERS_EXCEL_PATH)
+            auth.sync_tasks_from_excel(EXCEL_PATH)
+            auth.sync_comments_from_excel(EXCEL_PATH)
+        st.session_state.toast = {"msg": "Synced!", "type": "success"}
         st.rerun()
     if nav_c[_n + 1].button("Logout", use_container_width=True, key="nav_logout_emp"):
         st.session_state.current_user = None
         st.rerun()
 
-if excel_mtime() != st.session_state.excel_mtime:
-    st.warning("Excel file changed externally — click **Sync Excel** to reload.")
+if not gsheets.is_configured() and excel_mtime() != st.session_state.excel_mtime:
+    st.warning("Excel file changed externally — click **↻** to reload.")
 
 st.markdown("---")
 df = st.session_state.projects   # re-bind after possible sync
@@ -2898,6 +2976,11 @@ elif st.session_state.active_tab == "tasks":
             st.markdown(_POPUP_ERROR, unsafe_allow_html=True)
             st.session_state.task_popup = None
 
+        _sp = st.session_state.get("save_popup")
+        if _sp:
+            st.markdown(_POPUP_SAVED, unsafe_allow_html=True)
+            st.session_state.save_popup = None
+
         st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">My Tasks</h2>', unsafe_allow_html=True)
         st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Tasks assigned to you — update your progress here</p>', unsafe_allow_html=True)
 
@@ -2966,7 +3049,7 @@ elif st.session_state.active_tab == "tasks":
                                 _t["assigned_by_email"], _t["assigned_by"],
                                 cu["name"], _t["title"], _new_stat, _new_prog, "")
                         save_to_excel(st.session_state.projects)
-                        st.session_state.toast = {"msg": "Saved!", "type": "success"}
+                        st.session_state.save_popup = "success"
                         st.rerun()
 
     else:
@@ -2982,6 +3065,10 @@ elif st.session_state.active_tab == "tasks":
             elif _tp == "error":
                 st.markdown(_POPUP_ERROR, unsafe_allow_html=True)
                 st.session_state.task_popup = None
+            _sp2 = st.session_state.get("save_popup")
+            if _sp2:
+                st.markdown(_POPUP_SAVED, unsafe_allow_html=True)
+                st.session_state.save_popup = None
             _my_tasks = auth.get_user_tasks(cu["id"])
             if not _my_tasks:
                 st.info("No tasks assigned to you yet.")
@@ -3045,7 +3132,7 @@ elif st.session_state.active_tab == "tasks":
                             except Exception:
                                 pass
                         save_to_excel(st.session_state.projects)
-                        st.session_state.toast = {"msg": "Saved!", "type": "success"}
+                        st.session_state.save_popup = "success"
                         st.rerun()
 
         def _render_all_tasks_panel():

@@ -528,6 +528,122 @@ def sync_comments_from_excel(excel_path: str):
     conn.close()
 
 
+def sync_tasks_from_df(df):
+    """Import tasks from a DataFrame into SQLite (same logic as sync_tasks_from_excel)."""
+    import pandas as pd
+    if df is None or (hasattr(df, 'empty') and df.empty):
+        return
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, email FROM users")
+    email_map = {row[1].strip().lower(): row[0] for row in c.fetchall()}
+    for _, row in df.iterrows():
+        try:
+            task_id = int(float(str(row.get("id", 0) or 0)))
+            title = str(row.get("title", "")).strip()
+            if not task_id or not title:
+                continue
+            desc = str(row.get("description", "")).strip()
+            status = str(row.get("status", "Not Started")).strip()
+            progress = int(float(str(row.get("progress", 0) or 0)))
+            due_date = str(row.get("due_date", "")).strip()
+            start_date = str(row.get("start_date", "")).strip()
+            comment = str(row.get("comment", "")).strip()
+            created_at = str(row.get("created_at", _now())).strip() or _now()
+            updated_at = str(row.get("updated_at", _now())).strip() or _now()
+            to_email = str(row.get("assigned_to_email", "")).strip().lower()
+            by_email = str(row.get("assigned_by_email", "")).strip().lower()
+            to_id = email_map.get(to_email)
+            by_id = email_map.get(by_email)
+            if not to_id or not by_id:
+                continue
+            c.execute("SELECT id FROM tasks WHERE id=?", (task_id,))
+            if c.fetchone():
+                c.execute(
+                    "UPDATE tasks SET title=?,description=?,assigned_to_id=?,assigned_by_id=?,"
+                    "status=?,progress=?,start_date=?,due_date=?,comment=?,updated_at=? WHERE id=?",
+                    (title, desc, to_id, by_id, status, progress, start_date, due_date, comment, updated_at, task_id))
+            else:
+                c.execute(
+                    "INSERT INTO tasks (id,title,description,assigned_to_id,assigned_by_id,"
+                    "status,progress,start_date,due_date,comment,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (task_id, title, desc, to_id, by_id, status, progress, start_date, due_date, comment, created_at, updated_at))
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+
+
+def sync_users_from_df(df):
+    """Import users from a DataFrame into SQLite (same logic as sync_users_from_excel)."""
+    if df is None or (hasattr(df, 'empty') and df.empty):
+        return
+    conn = get_conn()
+    c = conn.cursor()
+    for _, row in df.iterrows():
+        try:
+            name = str(row.get("Name", row.get("name", ""))).strip()
+            email = str(row.get("Email", row.get("email", ""))).strip().lower()
+            role = str(row.get("Role", row.get("role", "employee"))).strip()
+            password = str(row.get("Password", row.get("password", ""))).strip()
+            active_str = str(row.get("Active", row.get("is_active", "Yes"))).strip().lower()
+            is_active = 1 if active_str in ("yes", "1", "true") else 0
+            if not name or not email or not password:
+                continue
+            if role not in ROLES:
+                role = "employee"
+            c.execute("SELECT id FROM users WHERE email=?", (email,))
+            if not c.fetchone():
+                c.execute(
+                    "INSERT INTO users (name, email, password_hash, role, is_active, created_at) VALUES (?,?,?,?,?,?)",
+                    (name, email, _hash(password), role, is_active, _now()),
+                )
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+
+
+def sync_comments_from_df(df):
+    """Bidirectional sync from a DataFrame: import missing, delete removed."""
+    if df is None or (hasattr(df, 'empty') and df.empty):
+        return
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, email FROM users")
+    email_map = {row[1].strip().lower(): row[0] for row in c.fetchall()}
+    excel_keys = set()
+    for _, row in df.iterrows():
+        try:
+            task_id = int(float(str(row.get("task_id", 0) or 0)))
+            user_email = str(row.get("employee_email", "")).strip().lower()
+            comment_text = str(row.get("comment", "")).strip()
+            week_start = str(row.get("week_start", "")).strip()
+            created_at = str(row.get("created_at", "")).strip() or _now()
+            if not task_id or not user_email or not comment_text or not week_start:
+                continue
+            user_id = email_map.get(user_email)
+            if not user_id:
+                continue
+            c.execute("SELECT id FROM tasks WHERE id=?", (task_id,))
+            if not c.fetchone():
+                continue
+            excel_keys.add((task_id, user_id, week_start))
+            c.execute(
+                "INSERT OR IGNORE INTO task_comments (task_id, user_id, comment, week_start, created_at) VALUES (?,?,?,?,?)",
+                (task_id, user_id, comment_text, week_start, created_at),
+            )
+        except Exception:
+            continue
+    c.execute("SELECT id, task_id, user_id, week_start FROM task_comments")
+    for row in c.fetchall():
+        if (row[1], row[2], row[3]) not in excel_keys:
+            c.execute("DELETE FROM task_comments WHERE id=?", (row[0],))
+    conn.commit()
+    conn.close()
+
+
 def get_user_tasks(user_id: int) -> list:
     conn = get_conn()
     c = conn.cursor()
