@@ -1031,7 +1031,12 @@ elif role in ("lead", "manager"):
         st.rerun()
 else:
     if nav_c[_n].button("Sync", use_container_width=True):
-        st.session_state.toast = {"msg": "Tasks refreshed!", "type": "success"}
+        st.session_state.projects = load_from_excel()
+        st.session_state.excel_mtime = excel_mtime()
+        auth.sync_users_from_excel(USERS_EXCEL_PATH)
+        auth.sync_tasks_from_excel(EXCEL_PATH)
+        auth.sync_comments_from_excel(EXCEL_PATH)
+        st.session_state.toast = {"msg": "Synced from Excel!", "type": "success"}
         st.rerun()
     if nav_c[_n + 1].button("Logout", use_container_width=True):
         st.session_state.current_user = None
