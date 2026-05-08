@@ -2690,7 +2690,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                         st.session_state.lc_mail_id = _lic["id"]
                         st.session_state.lc_edit_id = None
                         st.rerun()
-                if role == "admin":
+                if role in ("admin", "lead", "manager"):
                     with _lr[7]:
                         if st.button("✏", key=f"lc_e_{_lic['id']}", help="Edit license", use_container_width=True):
                             st.session_state.lc_edit_id = _lic["id"]
@@ -2888,7 +2888,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                         st.session_state.sl_mail_id = _sl["id"]
                         st.session_state.sl_edit_id = None
                         st.rerun()
-                if role == "admin":
+                if role in ("admin", "lead", "manager"):
                     with _slr[9]:
                         if st.button("✏", key=f"sl_e_{_sl['id']}", help="Edit sold license", use_container_width=True):
                             st.session_state.sl_edit_id = _sl["id"]
