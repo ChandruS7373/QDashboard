@@ -686,14 +686,71 @@ def update_task_meta(task_id: int, title: str, description: str, start_date: str
 
 # ── LICENSE CRUD ───────────────────────────────────────────────────────────────
 
-def create_license(tool_name: str, no_of_licenses: int, start_date: str, end_date: str) -> int:
+def _ensure_license_extras():
+    """Migrate: add client_email to licenses; create notification_log table."""
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE licenses ADD COLUMN client_email TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS license_notification_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_id INTEGER NOT NULL,
+                license_type TEXT NOT NULL,
+                threshold TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                UNIQUE(license_id, license_type, threshold)
+            )
+        """)
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
+
+
+def has_notification_been_sent(license_id: int, license_type: str, threshold: str) -> bool:
+    _ensure_license_extras()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT 1 FROM license_notification_log WHERE license_id=? AND license_type=? AND threshold=?",
+        (license_id, license_type, threshold)
+    )
+    found = c.fetchone() is not None
+    conn.close()
+    return found
+
+
+def mark_notification_sent(license_id: int, license_type: str, threshold: str):
+    _ensure_license_extras()
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO license_notification_log (license_id, license_type, threshold, sent_at) VALUES (?,?,?,?)",
+            (license_id, license_type, threshold, _now())
+        )
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
+
+
+def create_license(tool_name: str, no_of_licenses: int, start_date: str, end_date: str,
+                   client_email: str = "") -> int:
+    _ensure_license_extras()
     conn = get_conn()
     c = conn.cursor()
     now = _now()
     c.execute(
-        "INSERT INTO licenses (tool_name, no_of_licenses, start_date, end_date, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (tool_name.strip(), no_of_licenses, start_date.strip(), end_date.strip(), now, now),
+        "INSERT INTO licenses (tool_name, no_of_licenses, start_date, end_date, client_email, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (tool_name.strip(), no_of_licenses, start_date.strip(), end_date.strip(),
+         client_email.strip(), now, now),
     )
     conn.commit()
     lid = c.lastrowid
@@ -702,25 +759,29 @@ def create_license(tool_name: str, no_of_licenses: int, start_date: str, end_dat
 
 
 def get_all_licenses() -> list:
+    _ensure_license_extras()
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, tool_name, no_of_licenses, start_date, end_date, created_at FROM licenses ORDER BY id DESC")
+    c.execute("SELECT id, tool_name, no_of_licenses, start_date, end_date, client_email, created_at FROM licenses ORDER BY id DESC")
     rows = c.fetchall()
     conn.close()
     return [
         {"id": r[0], "tool_name": r[1], "no_of_licenses": r[2],
-         "start_date": r[3], "end_date": r[4], "created_at": r[5]}
+         "start_date": r[3], "end_date": r[4],
+         "client_email": r[5] or "", "created_at": r[6]}
         for r in rows
     ]
 
 
 def update_license(license_id: int, tool_name: str, no_of_licenses: int,
-                   start_date: str, end_date: str):
+                   start_date: str, end_date: str, client_email: str = ""):
+    _ensure_license_extras()
     conn = get_conn()
     c = conn.cursor()
     c.execute(
-        "UPDATE licenses SET tool_name=?, no_of_licenses=?, start_date=?, end_date=?, updated_at=? WHERE id=?",
-        (tool_name.strip(), no_of_licenses, start_date.strip(), end_date.strip(), _now(), license_id),
+        "UPDATE licenses SET tool_name=?, no_of_licenses=?, start_date=?, end_date=?, client_email=?, updated_at=? WHERE id=?",
+        (tool_name.strip(), no_of_licenses, start_date.strip(), end_date.strip(),
+         client_email.strip(), _now(), license_id),
     )
     conn.commit()
     conn.close()
@@ -748,25 +809,34 @@ def _ensure_sold_licenses_table():
             start_date TEXT DEFAULT '',
             end_date TEXT DEFAULT '',
             notes TEXT DEFAULT '',
+            client_email TEXT DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
     """)
+    # Migration: add client_email if missing from older DB
+    try:
+        c.execute("ALTER TABLE sold_licenses ADD COLUMN client_email TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
 
 def create_sold_license(tool_name: str, client: str, no_of_licenses: int,
-                        start_date: str, end_date: str, notes: str = "") -> int:
+                        start_date: str, end_date: str, notes: str = "",
+                        client_email: str = "") -> int:
     _ensure_sold_licenses_table()
     conn = get_conn()
     c = conn.cursor()
     now = _now()
     c.execute(
-        "INSERT INTO sold_licenses (tool_name, client, no_of_licenses, start_date, end_date, notes, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO sold_licenses (tool_name, client, no_of_licenses, start_date, end_date, notes, client_email, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (tool_name.strip(), client.strip(), no_of_licenses,
-         start_date.strip(), end_date.strip(), notes.strip(), now, now),
+         start_date.strip(), end_date.strip(), notes.strip(),
+         client_email.strip(), now, now),
     )
     conn.commit()
     lid = c.lastrowid
@@ -779,28 +849,31 @@ def get_all_sold_licenses() -> list:
     conn = get_conn()
     c = conn.cursor()
     c.execute(
-        "SELECT id, tool_name, client, no_of_licenses, start_date, end_date, notes, created_at "
+        "SELECT id, tool_name, client, no_of_licenses, start_date, end_date, notes, client_email, created_at "
         "FROM sold_licenses ORDER BY id DESC"
     )
     rows = c.fetchall()
     conn.close()
     return [
         {"id": r[0], "tool_name": r[1], "client": r[2], "no_of_licenses": r[3],
-         "start_date": r[4], "end_date": r[5], "notes": r[6], "created_at": r[7]}
+         "start_date": r[4], "end_date": r[5], "notes": r[6],
+         "client_email": r[7] or "", "created_at": r[8]}
         for r in rows
     ]
 
 
 def update_sold_license(lid: int, tool_name: str, client: str, no_of_licenses: int,
-                        start_date: str, end_date: str, notes: str = ""):
+                        start_date: str, end_date: str, notes: str = "",
+                        client_email: str = ""):
     _ensure_sold_licenses_table()
     conn = get_conn()
     c = conn.cursor()
     c.execute(
         "UPDATE sold_licenses SET tool_name=?, client=?, no_of_licenses=?, "
-        "start_date=?, end_date=?, notes=?, updated_at=? WHERE id=?",
+        "start_date=?, end_date=?, notes=?, client_email=?, updated_at=? WHERE id=?",
         (tool_name.strip(), client.strip(), no_of_licenses,
-         start_date.strip(), end_date.strip(), notes.strip(), _now(), lid),
+         start_date.strip(), end_date.strip(), notes.strip(),
+         client_email.strip(), _now(), lid),
     )
     conn.commit()
     conn.close()

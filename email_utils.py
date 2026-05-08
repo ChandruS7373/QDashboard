@@ -1,6 +1,10 @@
 import smtplib
 import random
 import os
+import re as _re
+import threading
+import time
+from datetime import date, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -150,6 +154,81 @@ def send_task_assigned_email(emp_email: str, emp_name: str, task_title: str,
     return send_email(emp_email, subject, body)
 
 
+def send_license_expiry_email(client_email: str, client_name: str, tool_name: str,
+                               end_date: str, days_left: int) -> tuple[bool, str]:
+    """Send a license expiry notification email.
+    days_left < 0 → expired; 0-30 → 30-day warning; 31-90 → 90-day warning; else → active notice.
+    """
+    if days_left < 0:
+        subject = f"Action Required – Your {tool_name} License Has Expired"
+        badge_bg, badge_color, badge_text = "#FEF2F2", "#991B1B", "EXPIRED"
+        heading = "Your License Has Expired"
+        intro = (f"Hi <b>{client_name}</b>,<br><br>"
+                 f"Your <b>{tool_name}</b> license expired on <b>{end_date}</b>. "
+                 f"Please renew at your earliest convenience to avoid service disruption.")
+        cta_label, cta_color = "Renew Now", "#DC2626"
+    elif days_left <= 30:
+        subject = f"Urgent – {tool_name} License Expiring in {days_left} Day{'s' if days_left != 1 else ''}"
+        badge_bg, badge_color, badge_text = "#FEF2F2", "#DC2626", f"EXPIRING IN {days_left}d"
+        heading = f"30-Day Alert: License Expires in {days_left} Day{'s' if days_left != 1 else ''}"
+        intro = (f"Hi <b>{client_name}</b>,<br><br>"
+                 f"<b>Urgent:</b> Your <b>{tool_name}</b> license is expiring on <b>{end_date}</b> — "
+                 f"only <b>{days_left} day{'s' if days_left != 1 else ''}</b> remaining. "
+                 f"Please renew immediately to ensure uninterrupted access.")
+        cta_label, cta_color = "Renew Now", "#DC2626"
+    elif days_left <= 60:
+        subject = f"Reminder – {tool_name} License Expiring in {days_left} Days (60-Day Notice)"
+        badge_bg, badge_color, badge_text = "#FFFBEB", "#B45309", f"EXPIRING IN {days_left}d"
+        heading = f"60-Day Notice: License Expires in {days_left} Days"
+        intro = (f"Hi <b>{client_name}</b>,<br><br>"
+                 f"Your <b>{tool_name}</b> license will expire on <b>{end_date}</b> — "
+                 f"<b>{days_left} days</b> from today. "
+                 f"This is your 60-day advance notice. Please begin your renewal process.")
+        cta_label, cta_color = "Start Renewal", "#D97706"
+    else:
+        subject = f"Reminder – {tool_name} License Expiring in {days_left} Days (90-Day Notice)"
+        badge_bg, badge_color, badge_text = "#FEF3C7", "#92400E", f"EXPIRING IN {days_left}d"
+        heading = f"90-Day Notice: License Expires in {days_left} Days"
+        intro = (f"Hi <b>{client_name}</b>,<br><br>"
+                 f"This is your 90-day advance notice that your <b>{tool_name}</b> license will expire on "
+                 f"<b>{end_date}</b> (<b>{days_left} days</b> from today). "
+                 f"Please plan your renewal well in advance.")
+        cta_label, cta_color = "Plan Renewal", "#2563EB"
+
+    body = f"""
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+     max-width:520px;margin:0 auto;padding:32px;background:#F8FAFC;border-radius:12px">
+  <div style="font-size:28px;font-weight:900;color:#3B82F6;letter-spacing:-1px;margin-bottom:4px">Q</div>
+  <h2 style="color:#0F172A;margin:0 0 12px">{heading}</h2>
+  <p style="color:#475569;margin:0 0 20px;line-height:1.6">{intro}</p>
+  <div style="background:#fff;border:1px solid #E2E8F0;border-radius:10px;padding:18px 22px;margin:0 0 20px">
+    <div style="font-size:16px;font-weight:700;color:#0F172A;margin-bottom:10px">{tool_name}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;color:#64748B">
+      <tr>
+        <td style="padding:4px 0;width:40%">Expiry Date</td>
+        <td style="padding:4px 0;font-weight:600;color:#0F172A">{end_date}</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 0">Status</td>
+        <td style="padding:4px 0">
+          <span style="background:{badge_bg};color:{badge_color};font-size:10px;font-weight:700;
+                padding:2px 8px;border-radius:10px">{badge_text}</span>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <a href="{PORTAL_URL}" style="display:inline-block;background:{cta_color};color:#fff;
+     text-decoration:none;font-weight:700;font-size:13px;padding:10px 24px;
+     border-radius:6px;margin-bottom:24px">{cta_label}</a>
+  <p style="color:#94A3B8;font-size:11px;margin:0;border-top:1px solid #E2E8F0;padding-top:16px">
+    This is an automated notification from Qualesce AI Project Manager.
+    Please contact your account manager if you need assistance.
+  </p>
+</div>
+"""
+    return send_email(client_email, subject, body)
+
+
 def send_task_updated_email(assigner_email: str, assigner_name: str, emp_name: str,
                              task_title: str, new_status: str, progress: int,
                              comment: str) -> tuple[bool, str]:
@@ -182,3 +261,94 @@ def send_task_updated_email(assigner_email: str, assigner_name: str, emp_name: s
 </div>
 """
     return send_email(assigner_email, subject, body)
+
+
+# ── LICENSE EXPIRY AUTO-NOTIFIER ──────────────────────────────────────────────
+
+_scheduler_started = False
+_scheduler_lock = threading.Lock()
+
+
+def _parse_date(date_str: str):
+    if not date_str:
+        return None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def run_license_notification_check():
+    """Check all licenses and send expiry emails at 90-day, 30-day, and expired thresholds."""
+    try:
+        import auth as _auth
+        today = date.today()
+
+        sources = [
+            (_auth.get_all_licenses(),      "purchased"),
+            (_auth.get_all_sold_licenses(), "sold"),
+        ]
+
+        for licenses, lic_type in sources:
+            for lic in licenses:
+                client_email = lic.get("client_email", "").strip()
+                if not client_email:
+                    continue
+
+                end_date = _parse_date(lic.get("end_date", ""))
+                if not end_date:
+                    continue
+
+                days_left = (end_date - today).days
+
+                if days_left <= 0:
+                    threshold = "expired"
+                elif days_left <= 30:
+                    threshold = "30d"
+                elif days_left <= 90:
+                    threshold = "90d"
+                else:
+                    continue
+
+                if _auth.has_notification_been_sent(lic["id"], lic_type, threshold):
+                    continue
+
+                addrs = [a.strip() for a in _re.split(r"[,\n;]+", client_email)
+                         if a.strip() and "@" in a.strip()]
+                if not addrs:
+                    continue
+
+                client_name = lic.get("client", lic.get("tool_name", "Client"))
+                tool_name   = lic.get("tool_name", "License")
+                end_date_str = lic.get("end_date", "")
+
+                all_ok = True
+                for addr in addrs:
+                    ok, _ = send_license_expiry_email(addr, client_name, tool_name, end_date_str, days_left)
+                    if not ok:
+                        all_ok = False
+
+                if all_ok:
+                    _auth.mark_notification_sent(lic["id"], lic_type, threshold)
+
+    except Exception:
+        pass
+
+
+def _scheduler_loop():
+    while True:
+        run_license_notification_check()
+        time.sleep(24 * 60 * 60)
+
+
+def start_license_notification_scheduler():
+    """Start the background daily license-expiry notification thread (once per process)."""
+    global _scheduler_started
+    with _scheduler_lock:
+        if _scheduler_started:
+            return
+        _scheduler_started = True
+    t = threading.Thread(target=_scheduler_loop, daemon=True, name="license-notif-scheduler")
+    t.start()

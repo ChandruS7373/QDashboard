@@ -24,6 +24,8 @@ if "db_initialized" not in st.session_state:
     auth.init_db()
     st.session_state.db_initialized = True
 
+email_utils.start_license_notification_scheduler()
+
 # ── EXCEL PATH ────────────────────────────────────────────────────────────────
 EXCEL_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects.xlsx")
 USERS_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.xlsx")
@@ -509,6 +511,10 @@ if "project_filter_preset"  not in st.session_state: st.session_state.project_fi
 if "presales_filter_preset" not in st.session_state: st.session_state.presales_filter_preset = "All"
 if "lc_edit_id"            not in st.session_state: st.session_state.lc_edit_id            = None
 if "sl_edit_id"            not in st.session_state: st.session_state.sl_edit_id            = None
+if "sl_mail_id"            not in st.session_state: st.session_state.sl_mail_id            = None
+if "lc_mail_id"            not in st.session_state: st.session_state.lc_mail_id            = None
+if "sl_send_all_trigger"  not in st.session_state: st.session_state.sl_send_all_trigger  = False
+if "lc_last_notif_check"  not in st.session_state: st.session_state.lc_last_notif_check  = ""
 if "dash_client_filter"    not in st.session_state: st.session_state.dash_client_filter    = "All"
 if "dash_slicers_expanded" not in st.session_state: st.session_state.dash_slicers_expanded = False
 if "current_user"         not in st.session_state: st.session_state.current_user         = None
@@ -1015,27 +1021,165 @@ df    = st.session_state.projects
 stats = get_stats(df)
 
 _new_badge = f"&nbsp;<span style='color:#34D399;font-weight:600'>+{stats['new_added']} new</span>" if stats["new_added"] else ""
-st.markdown(
-    f'<div class="q-nav">'
-    f'<div style="display:flex;align-items:center;gap:14px">'
-    f'<div style="width:38px;height:38px;background:linear-gradient(135deg,#3B82F6,#6366F1);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;letter-spacing:-0.5px;box-shadow:0 0 0 1px rgba(255,255,255,.12)">Q</div>'
-    f'<div>'
-    f'<div style="font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:13px;color:#F1F5F9;letter-spacing:2px;text-transform:uppercase">QUALESCE</div>'
-    f'<div style="font-size:9px;color:#94A3B8;letter-spacing:1.2px;text-transform:uppercase;font-weight:500;margin-top:1px">AI Project Manager</div>'
-    f'</div>'
-    f'</div>'
-    f'<div style="font-size:12px;color:#94A3B8;display:flex;align-items:center;gap:10px">'
-    f'<span style="width:7px;height:7px;border-radius:50%;background:#10B981;box-shadow:0 0 8px #10B981;display:inline-block"></span>'
-    f'<b style="color:#E2E8F0;font-weight:600">{stats["total"]}</b>'
-    f'<span>projects live</span>'
-    f'{_new_badge}'
-    f'&nbsp;<span style="color:#475569">|</span>&nbsp;'
-    f'<span style="color:#E2E8F0;font-weight:600">{esc(cu["name"])}</span>'
-    f'<span style="background:#1E3A8A;color:#93C5FD;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase">{esc(cu["role"])}</span>'
-    f'</div>'
-    f'</div>',
-    unsafe_allow_html=True
-)
+st.markdown("""
+<style>
+/* ── Remove Streamlit default top padding ────────────────────────────────── */
+.block-container, [data-testid="stMainBlockContainer"],
+[data-testid="stAppViewContainer"] > .main > .block-container {
+    padding-top:0 !important;
+}
+/* ── Title bar: fixed full-viewport-width, 52px tall ─────────────────────── */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) {
+    position:fixed !important; top:0 !important; left:0 !important; right:0 !important;
+    width:100vw !important; max-width:100vw !important;
+    background:#0F172A !important; padding:0 !important; margin:0 !important;
+    z-index:1000 !important; box-shadow:0 2px 12px rgba(0,0,0,.30) !important;
+    height:52px !important; display:flex !important; align-items:center !important; gap:0 !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div {
+    background:#0F172A !important; display:flex !important;
+    align-items:center !important; padding:0 !important; height:52px !important;
+}
+/* Logo column inner wrappers */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child > div,
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child [data-testid="stVerticalBlock"],
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child [class*="element-container"] {
+    display:flex !important; align-items:center !important;
+    padding:0 !important; margin:0 !important; height:52px !important; width:100% !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child { padding-left:20px !important; }
+/* Stats column: right-aligned */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) {
+    justify-content:flex-end !important; padding-right:52px !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) > div,
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) [data-testid="stVerticalBlock"],
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) [class*="element-container"] {
+    display:flex !important; align-items:center !important; justify-content:flex-end !important;
+    padding:0 !important; margin:0 !important; height:52px !important; width:100% !important;
+}
+/* ⋮ column: independently fixed to top-right corner */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child {
+    position:fixed !important; top:0 !important; right:0 !important;
+    width:44px !important; height:52px !important;
+    display:flex !important; align-items:center !important; justify-content:center !important;
+    padding:0 !important; margin:0 !important; z-index:1001 !important;
+    background:#0F172A !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child > div,
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child [data-testid="stVerticalBlock"],
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child [class*="element-container"] {
+    padding:0 !important; margin:0 !important; gap:0 !important;
+    display:flex !important; align-items:center !important; justify-content:center !important;
+    width:auto !important; min-width:0 !important; height:52px !important;
+}
+/* ⋮ button */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button,
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button:focus,
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button:active {
+    background:transparent !important; border:none !important;
+    box-shadow:none !important; outline:none !important;
+    position:relative !important; overflow:hidden !important;
+    width:24px !important; height:24px !important; min-width:0 !important; min-height:0 !important;
+    padding:0 !important; cursor:pointer !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button > * {
+    visibility:hidden !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button::before {
+    content:"⋮" !important; position:absolute !important; inset:0 !important;
+    display:flex !important; align-items:center !important; justify-content:center !important;
+    font-size:20px !important; font-weight:900 !important;
+    color:#DC2626 !important; visibility:visible !important; z-index:10 !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button:hover::before {
+    color:#B91C1C !important;
+}
+/* Collapse the act-add-marker wrapper so it takes no space and doesn't push the button down */
+[class*="element-container"]:has(.act-add-marker) {
+    display:none !important;
+}
+/* Add button in Projects filter — align the column so button sits flush with other filter inputs */
+[class*="element-container"]:has(.act-add-marker) + [class*="element-container"] {
+    display:flex !important; align-items:center !important;
+    height:38px !important; margin:0 !important; padding:0 !important;
+}
+[class*="element-container"]:has(.act-add-marker) + [class*="element-container"] .stButton {
+    width:100% !important; height:38px !important;
+    display:flex !important; align-items:center !important; margin:0 !important; padding:0 !important;
+}
+[class*="element-container"]:has(.act-add-marker) + [class*="element-container"] .stButton button {
+    background:#DC2626 !important; color:#fff !important; border-color:#DC2626 !important;
+    border-radius:4px !important; height:38px !important; width:100% !important;
+    display:flex !important; align-items:center !important; justify-content:center !important;
+    margin:0 !important; padding:0 6px !important;
+}
+[class*="element-container"]:has(.act-add-marker) + [class*="element-container"] .stButton button:hover {
+    background:#B91C1C !important; border-color:#B91C1C !important;
+}
+/* Mail buttons in License table rows (purchased + sold) */
+div[data-testid="stHorizontalBlock"] button[data-testid^="sl_mail_"],
+div[data-testid="stHorizontalBlock"] button[data-testid^="lc_mail_"] {
+    background:#2563EB !important; color:#fff !important;
+    border-color:#2563EB !important; border-radius:3px !important;
+    font-size:9px !important; font-weight:700 !important;
+    height:24px !important; min-height:24px !important;
+    padding:0 6px !important; line-height:1 !important;
+    white-space:nowrap !important; overflow:hidden !important;
+}
+div[data-testid="stHorizontalBlock"] button[data-testid^="sl_mail_"] p,
+div[data-testid="stHorizontalBlock"] button[data-testid^="lc_mail_"] p {
+    white-space:nowrap !important; font-size:9px !important; margin:0 !important;
+}
+/* Logout popover */
+div[data-testid="stPopover"] .stButton button {
+    font-size:12px !important; height:26px !important; padding:0 12px !important;
+    width:100% !important; font-weight:600 !important;
+    background:#DC2626 !important; color:#fff !important; border-color:#DC2626 !important;
+    border-radius:4px !important;
+}
+div[data-testid="stPopover"] .stButton button:hover {
+    background:#B91C1C !important; border-color:#B91C1C !important;
+}
+</style>
+""", unsafe_allow_html=True)
+_hdr_l, _hdr_m, _hdr_r = st.columns([4, 7, 1])
+with _hdr_l:
+    st.markdown(
+        f'<div class="q-nav-left" style="display:flex;align-items:center;height:62px">'
+        f'<div style="display:flex;align-items:center;gap:14px">'
+        f'<div style="width:38px;height:38px;background:linear-gradient(135deg,#3B82F6,#6366F1);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;letter-spacing:-0.5px;box-shadow:0 0 0 1px rgba(255,255,255,.12)">Q</div>'
+        f'<div>'
+        f'<div style="font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:13px;color:#F1F5F9;letter-spacing:2px;text-transform:uppercase">QUALESCE</div>'
+        f'<div style="font-size:9px;color:#94A3B8;letter-spacing:1.2px;text-transform:uppercase;font-weight:500;margin-top:1px">AI Project Manager</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+with _hdr_m:
+    st.markdown(
+        f'<div style="display:flex;align-items:center;justify-content:flex-end;height:62px;width:100%">'
+        f'<div style="font-size:12px;color:#94A3B8;display:flex;align-items:center;gap:10px;line-height:1">'
+        f'<span style="width:7px;height:7px;border-radius:50%;background:#10B981;box-shadow:0 0 8px #10B981;display:inline-block;vertical-align:middle;flex-shrink:0"></span>'
+        f'<b style="color:#E2E8F0;font-weight:600;vertical-align:middle">{stats["total"]}</b>'
+        f'<span style="vertical-align:middle">projects live</span>'
+        f'{_new_badge}'
+        f'<span style="color:#475569;vertical-align:middle">|</span>'
+        f'<span style="color:#E2E8F0;font-weight:600;vertical-align:middle">{esc(cu["name"])}</span>'
+        f'<span style="background:#1E3A8A;color:#93C5FD;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;vertical-align:middle">{esc(cu["role"])}</span>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+with _hdr_r:
+    with st.popover("⋮", use_container_width=False):
+        if st.button("Logout", key="nav_logout_title", use_container_width=True):
+            st.session_state.current_user = None
+            st.rerun()
+
+# Spacer: 20px above nav row
+st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
 
 # ── TOAST ─────────────────────────────────────────────────────────────────────
 if st.session_state.toast:
@@ -1074,45 +1218,54 @@ if st.session_state.active_tab not in [t[0] for t in _tab_defs]:
     st.session_state.active_tab = _tab_defs[0][0]
 
 _n = len(_tab_defs)
-if role == "admin":
-    nav_c = st.columns([1] * _n + [1, 1, 1])
-elif role in ("lead", "manager"):
-    nav_c = st.columns([1] * _n + [1, 1, 1])
-else:
-    nav_c = st.columns([1] * _n + [1, 1])
+nav_c = st.columns([1] * _n + [1])  # tabs + Refresh (Add moved into Projects tab)
 
-# ── Button colour CSS ─────────────────────────────────────────────────────────
+# Inject a hidden marker into the first nav column so CSS can scope to this row only
+nav_c[0].markdown('<span class="q-nav-bar" style="display:none"></span>', unsafe_allow_html=True)
+
+# ── Button colour CSS (scoped to nav row via .q-nav-bar marker) ────────────────
 st.markdown("""
 <style>
-/* All nav buttons: uniform size */
-div[data-testid="stHorizontalBlock"] .stButton button {
-    font-size:11px !important; font-weight:700 !important;
-    padding:0 6px !important; height:36px !important;
-    border-radius:7px !important; letter-spacing:.3px;
+/* Kill the element-container gap Streamlit wraps around the nav row */
+[class*="element-container"]:has(> div[data-testid="stHorizontalBlock"]:has(.q-nav-bar)) {
+    margin:0 !important; padding:0 !important;
+}
+/* Nav row: equal-width columns, 35px space above and below */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) {
+    align-items:center !important; gap:3px !important;
+    padding:20px 8px !important; margin:0 !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) > div {
+    display:flex !important; align-items:center !important;
+    padding:0 !important; margin:0 !important;
+    height:26px !important; overflow:hidden !important;
+}
+/* Collapse the marker-span wrapper so it takes zero space in column 0 */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [class*="element-container"]:has(.q-nav-bar) {
+    display:none !important;
+}
+/* Lock every wrapper level to 26px so primary/secondary renders identically */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) > div > div,
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [data-testid="stVerticalBlock"],
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [class*="element-container"],
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton {
+    padding:0 !important; margin:0 !important; width:100% !important;
+    height:26px !important; overflow:hidden !important;
+    display:flex !important; align-items:center !important;
+}
+/* Nav buttons: same height for active (primary) and inactive (secondary) */
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton button {
+    font-size:10px !important; font-weight:700 !important;
+    padding:0 6px !important;
+    height:26px !important; min-height:0 !important; max-height:26px !important;
+    line-height:26px !important; border-radius:4px !important; letter-spacing:.2px !important;
     width:100% !important;
+    background:#DC2626 !important; color:#fff !important; border-color:#DC2626 !important;
+    display:flex !important; align-items:center !important; justify-content:center !important;
+    white-space:nowrap !important; overflow:hidden !important;
+    box-sizing:border-box !important; vertical-align:middle !important;
 }
-/* Add Project → emerald */
-div[data-testid="stHorizontalBlock"] div:nth-last-child(3) .stButton button {
-    background:#16A34A !important; color:#fff !important;
-    border-color:#16A34A !important;
-}
-div[data-testid="stHorizontalBlock"] div:nth-last-child(3) .stButton button:hover {
-    background:#15803D !important; border-color:#15803D !important;
-}
-/* Sync → teal */
-div[data-testid="stHorizontalBlock"] div:nth-last-child(2) .stButton button {
-    background:#0D9488 !important; color:#fff !important;
-    border-color:#0D9488 !important; font-size:15px !important;
-}
-div[data-testid="stHorizontalBlock"] div:nth-last-child(2) .stButton button:hover {
-    background:#0F766E !important; border-color:#0F766E !important;
-}
-/* Logout → red */
-div[data-testid="stHorizontalBlock"] div:nth-last-child(1) .stButton button {
-    background:#DC2626 !important; color:#fff !important;
-    border-color:#DC2626 !important;
-}
-div[data-testid="stHorizontalBlock"] div:nth-last-child(1) .stButton button:hover {
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton button:hover {
     background:#B91C1C !important; border-color:#B91C1C !important;
 }
 </style>
@@ -1120,18 +1273,14 @@ div[data-testid="stHorizontalBlock"] div:nth-last-child(1) .stButton button:hove
 
 for _i, (_tid, _tlabel) in enumerate(_tab_defs):
     _active = st.session_state.active_tab == _tid
-    _badge  = f" +{stats['new_added']}" if _tid == "projects" and stats.get("new_added") else ""
-    if nav_c[_i].button(f"{_tlabel}{_badge}", key=f"tab_{_tid}",
+    if nav_c[_i].button(f"{_tlabel}", key=f"tab_{_tid}",
                         type="primary" if _active else "secondary",
                         use_container_width=True):
         st.session_state.active_tab = _tid
         st.rerun()
 
-if role == "admin":
-    if nav_c[_n].button("+ Add", use_container_width=True, key="nav_add_proj"):
-        st.session_state.show_modal = "add"
-        st.rerun()
-    if nav_c[_n + 1].button("↻", use_container_width=True, key="nav_sync_admin"):
+if role in ("admin", "lead", "manager"):
+    if nav_c[_n].button("Refresh", use_container_width=True, key="nav_sync_admin"):
         st.session_state.projects = load_from_excel()
         st.session_state.excel_mtime = excel_mtime()
         ids = pd.to_numeric(st.session_state.projects.get("id", pd.Series([])), errors="coerce").dropna()
@@ -1146,35 +1295,9 @@ if role == "admin":
             auth.sync_tasks_from_excel(EXCEL_PATH)
             auth.sync_comments_from_excel(EXCEL_PATH)
         st.session_state.toast = {"msg": "Synced!", "type": "success"}
-        st.rerun()
-    if nav_c[_n + 2].button("Logout", use_container_width=True, key="nav_logout_admin"):
-        st.session_state.current_user = None
-        st.rerun()
-elif role in ("lead", "manager"):
-    if nav_c[_n].button("+ Add", use_container_width=True, key="nav_add_proj_lm"):
-        st.session_state.show_modal = "add"
-        st.rerun()
-    if nav_c[_n + 1].button("↻", use_container_width=True, key="nav_sync_lm"):
-        st.session_state.projects = load_from_excel()
-        st.session_state.excel_mtime = excel_mtime()
-        ids = pd.to_numeric(st.session_state.projects.get("id", pd.Series([])), errors="coerce").dropna()
-        st.session_state.next_id = int(ids.max()) + 1 if not ids.empty else max(r["id"] for r in BASE_PROJECTS) + 1
-        if gsheets.is_configured():
-            _u = gsheets.read_sheet("Users"); _t = gsheets.read_sheet("Tasks"); _c = gsheets.read_sheet("Comments")
-            if not _u.empty: auth.sync_users_from_df(_u)
-            if not _t.empty: auth.sync_tasks_from_df(_t)
-            if not _c.empty: auth.sync_comments_from_df(_c)
-        else:
-            auth.sync_users_from_excel(USERS_EXCEL_PATH)
-            auth.sync_tasks_from_excel(EXCEL_PATH)
-            auth.sync_comments_from_excel(EXCEL_PATH)
-        st.session_state.toast = {"msg": "Synced!", "type": "success"}
-        st.rerun()
-    if nav_c[_n + 2].button("Logout", use_container_width=True, key="nav_logout_lm"):
-        st.session_state.current_user = None
         st.rerun()
 else:
-    if nav_c[_n].button("↻", use_container_width=True, key="nav_sync_emp"):
+    if nav_c[_n].button("Refresh", use_container_width=True, key="nav_sync_emp"):
         st.session_state.projects = load_from_excel()
         st.session_state.excel_mtime = excel_mtime()
         if gsheets.is_configured():
@@ -1188,12 +1311,8 @@ else:
             auth.sync_comments_from_excel(EXCEL_PATH)
         st.session_state.toast = {"msg": "Synced!", "type": "success"}
         st.rerun()
-    if nav_c[_n + 1].button("Logout", use_container_width=True, key="nav_logout_emp"):
-        st.session_state.current_user = None
-        st.rerun()
-
 if not gsheets.is_configured() and excel_mtime() != st.session_state.excel_mtime:
-    st.warning("Excel file changed externally — click **↻** to reload.")
+    st.warning("Excel file changed externally — click **Refresh** to reload.")
 
 st.markdown("---")
 df = st.session_state.projects   # re-bind after possible sync
@@ -1923,14 +2042,22 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "projects" and role != "employee":
 
-    # ── Shared filter bar (client, project search, active/inactive) ───────────
-    f1, f2, f3 = st.columns([2, 1.5, 1.5])
+    # ── Shared filter bar (client, project search, active/inactive, add) ────────
+    if role in ("admin", "lead", "manager"):
+        f1, f2, f3, f4 = st.columns([2, 1.5, 1.5, 0.7])
+    else:
+        f1, f2, f3 = st.columns([2, 1.5, 1.5])
     search_q      = f1.text_input("Search", placeholder="Search projects…",
                                   label_visibility="collapsed")
     client_filter = f2.selectbox("Client", ["All"] + sorted(df["client"].dropna().unique().tolist()),
                                  label_visibility="collapsed")
     active_filter = f3.selectbox("Status", ["All", "Active", "Inactive"],
                                  label_visibility="collapsed")
+    if role in ("admin", "lead", "manager"):
+        f4.markdown('<span class="act-add-marker" style="display:none"></span>', unsafe_allow_html=True)
+        if f4.button("Add", key="proj_tab_add", use_container_width=True):
+            st.session_state.show_modal = "add"
+            st.rerun()
 
     # ── Helper: apply shared filters to a sub-set of projects ─────────────────
     def _apply_filters(subset):
@@ -2352,13 +2479,32 @@ elif st.session_state.active_tab == "license" and role != "employee":
                 return (f'<span style="background:#FEF2F2;color:#991B1B;font-size:10px;font-weight:700;'
                         f'padding:2px 8px;border-radius:10px">Expired</span>')
             elif diff <= 30:
-                return (f'<span style="background:#FFFBEB;color:#92400E;font-size:10px;font-weight:700;'
-                        f'padding:2px 8px;border-radius:10px">Expiring in {diff}d</span>')
+                return (f'<span style="background:#FEF2F2;color:#DC2626;font-size:10px;font-weight:700;'
+                        f'padding:2px 8px;border-radius:10px">30d: {diff}d left</span>')
+            elif diff <= 60:
+                return (f'<span style="background:#FFFBEB;color:#B45309;font-size:10px;font-weight:700;'
+                        f'padding:2px 8px;border-radius:10px">60d: {diff}d left</span>')
+            elif diff <= 90:
+                return (f'<span style="background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;'
+                        f'padding:2px 8px;border-radius:10px">90d: {diff}d left</span>')
             else:
                 return (f'<span style="background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;'
                         f'padding:2px 8px;border-radius:10px">Active</span>')
         except ValueError:
             return f'<span style="font-size:11px;color:#64748B">{esc(end_date)}</span>'
+
+    def _notif_threshold(days_left) -> str | None:
+        if days_left is None:
+            return None
+        if days_left < 0:
+            return "expired"
+        elif days_left <= 30:
+            return "30d"
+        elif days_left <= 60:
+            return "60d"
+        elif days_left <= 90:
+            return "90d"
+        return None
 
     _licenses_all     = auth.get_all_licenses()
     _sold_licenses_all = auth.get_all_sold_licenses()
@@ -2366,12 +2512,110 @@ elif st.session_state.active_tab == "license" and role != "employee":
     # Tool names from purchased licenses (for Sold License dropdown)
     _purchased_tool_names = sorted({l["tool_name"].strip() for l in _licenses_all if l["tool_name"].strip()})
 
+    # ── Auto-send expiry notifications (once per day per session) ────────────
+    _today_str = datetime.now().strftime("%Y-%m-%d")
+    if st.session_state.lc_last_notif_check != _today_str:
+        st.session_state.lc_last_notif_check = _today_str
+        _auto_results = []
+        for _al in _licenses_all:
+            if not _al.get("client_email") or not _al.get("end_date"):
+                continue
+            try:
+                _dl = (datetime.strptime(_al["end_date"], "%Y-%m-%d").date() - datetime.now().date()).days
+            except ValueError:
+                continue
+            _thr = _notif_threshold(_dl)
+            if _thr and not auth.has_notification_been_sent(_al["id"], "purchased", _thr):
+                _ok, _ = email_utils.send_license_expiry_email(
+                    _al["client_email"], _al["tool_name"], _al["tool_name"], _al["end_date"], _dl)
+                if _ok:
+                    auth.mark_notification_sent(_al["id"], "purchased", _thr)
+                    _auto_results.append(f'{_al["tool_name"]} ({_thr})')
+        for _sl in _sold_licenses_all:
+            if not _sl.get("client_email") or not _sl.get("end_date"):
+                continue
+            try:
+                _dl = (datetime.strptime(_sl["end_date"], "%Y-%m-%d").date() - datetime.now().date()).days
+            except ValueError:
+                continue
+            _thr = _notif_threshold(_dl)
+            if _thr and not auth.has_notification_been_sent(_sl["id"], "sold", _thr):
+                _ok, _ = email_utils.send_license_expiry_email(
+                    _sl["client_email"], _sl["client"], _sl["tool_name"], _sl["end_date"], _dl)
+                if _ok:
+                    auth.mark_notification_sent(_sl["id"], "sold", _thr)
+                    _auto_results.append(f'{_sl["tool_name"]} → {_sl["client"]} ({_thr})')
+        if _auto_results:
+            st.session_state.toast = {
+                "msg": f"Auto-sent {len(_auto_results)} expiry notification(s): {', '.join(_auto_results[:3])}{'…' if len(_auto_results) > 3 else ''}",
+                "type": "info"
+            }
+
     _lc_tab1, _lc_tab2 = st.tabs(["Purchased License", "Sold License"])
 
     # ══════════════════════════════════════════════════════════════════════════
     # SUB-TAB 1 — PURCHASED LICENSE
     # ══════════════════════════════════════════════════════════════════════════
     with _lc_tab1:
+        # ── Mail compose form (purchased) ─────────────────────────────────────
+        if st.session_state.lc_mail_id is not None:
+            _lm_rec = next((x for x in _licenses_all if x["id"] == st.session_state.lc_mail_id), None)
+            if _lm_rec:
+                try:
+                    _lm_dl = (datetime.strptime(_lm_rec["end_date"], "%Y-%m-%d").date() - datetime.now().date()).days if _lm_rec.get("end_date") else None
+                except ValueError:
+                    _lm_dl = None
+                _lm_status = ("Expired" if _lm_dl is not None and _lm_dl < 0 else
+                               f"Expiring in {_lm_dl}d" if _lm_dl is not None else "No expiry date")
+                with st.container(border=True):
+                    st.markdown(
+                        f'<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:4px">'
+                        f'Manage Notification Emails — {esc(_lm_rec["tool_name"])}</div>'
+                        f'<div style="font-size:11px;color:#64748B;margin-bottom:12px">'
+                        f'Expiry: <b>{_lm_rec["end_date"] or "—"}</b> &nbsp;|&nbsp; Status: <b>{_lm_status}</b></div>',
+                        unsafe_allow_html=True
+                    )
+                    _lm_emails_raw = st.text_area(
+                        "Notification Email Addresses",
+                        value=_lm_rec.get("client_email", ""),
+                        height=90, key="lc_mail_recipients",
+                        placeholder="Enter one or more addresses, separated by commas or new lines"
+                    )
+                    _lmb1, _lmb2, _lmb3, _ = st.columns([1, 1.4, 1, 5])
+                    if _lmb1.button("Save", type="primary", key="lc_mail_save"):
+                        auth.update_license(
+                            _lm_rec["id"], _lm_rec["tool_name"],
+                            int(_lm_rec["no_of_licenses"]),
+                            _lm_rec["start_date"], _lm_rec["end_date"],
+                            _lm_emails_raw.strip()
+                        )
+                        st.session_state.lc_mail_id = None
+                        st.session_state.toast = {"msg": "Email address(es) saved.", "type": "success"}
+                        st.rerun()
+                    if _lmb2.button("Send", key="lc_mail_send"):
+                        import re as _re
+                        _lm_addrs = [a.strip() for a in _re.split(r"[,\n;]+", _lm_emails_raw) if a.strip() and "@" in a.strip()]
+                        if not _lm_addrs:
+                            st.error("Please enter at least one valid email address.")
+                        elif _lm_dl is None:
+                            st.error("No expiry date set — cannot send notification.")
+                        else:
+                            _lm_ok, _lm_fail = 0, 0
+                            for _addr in _lm_addrs:
+                                _ok, _ = email_utils.send_license_expiry_email(
+                                    _addr, _lm_rec["tool_name"], _lm_rec["tool_name"], _lm_rec["end_date"], _lm_dl)
+                                if _ok: _lm_ok += 1
+                                else:   _lm_fail += 1
+                            st.session_state.lc_mail_id = None
+                            st.session_state.toast = {
+                                "msg": f"Sent to {_lm_ok} recipient(s)." + (f" {_lm_fail} failed." if _lm_fail else ""),
+                                "type": "success" if _lm_fail == 0 else "warning"
+                            }
+                            st.rerun()
+                    if _lmb3.button("Cancel", key="lc_mail_cancel"):
+                        st.session_state.lc_mail_id = None
+                        st.rerun()
+
         # ── Edit form ────────────────────────────────────────────────────────
         if st.session_state.lc_edit_id is not None:
             _lc_rec = next((x for x in _licenses_all if x["id"] == st.session_state.lc_edit_id), None)
@@ -2386,12 +2630,13 @@ elif st.session_state.active_tab == "license" and role != "employee":
                     _e_end_dt   = _ec4.date_input("End Date", value=_parse_ymd(_lc_rec["end_date"]), key="lc_e_end", format="DD/MM/YYYY")
                     _e_start = _e_start_dt.strftime("%Y-%m-%d") if _e_start_dt else ""
                     _e_end   = _e_end_dt.strftime("%Y-%m-%d") if _e_end_dt else ""
+                    _e_email = st.text_input("Notification Email(s)", value=_lc_rec.get("client_email", ""), key="lc_e_email", placeholder="email1@company.com, email2@company.com")
                     _eb1, _eb2 = st.columns([1, 4])
                     if _eb1.button("Save Changes", type="primary", key="lc_save_edit"):
                         if not _e_tool.strip():
                             st.error("Tool name is required.")
                         else:
-                            auth.update_license(st.session_state.lc_edit_id, _e_tool, int(_e_seats), _e_start, _e_end)
+                            auth.update_license(st.session_state.lc_edit_id, _e_tool, int(_e_seats), _e_start, _e_end, _e_email)
                             save_to_excel_async(st.session_state.projects)
                             st.session_state.lc_edit_id = None
                             st.session_state.toast = {"msg": "License updated!", "type": "success"}
@@ -2410,11 +2655,12 @@ elif st.session_state.active_tab == "license" and role != "employee":
             _n_end_dt   = _lc4.date_input("End Date (optional)", value=None, key="lc_n_end", format="DD/MM/YYYY")
             _n_start = _n_start_dt.strftime("%Y-%m-%d") if _n_start_dt else ""
             _n_end   = _n_end_dt.strftime("%Y-%m-%d") if _n_end_dt else ""
+            _n_email = st.text_input("Notification Email(s) (for auto expiry alerts)", key="lc_n_email", placeholder="email1@company.com, email2@company.com")
             if st.button("Add License", type="primary", key="lc_add_btn"):
                 if not _n_tool.strip():
                     st.error("Tool name is required.")
                 else:
-                    auth.create_license(_n_tool, int(_n_seats), _n_start, _n_end)
+                    auth.create_license(_n_tool, int(_n_seats), _n_start, _n_end, _n_email)
                     save_to_excel_async(st.session_state.projects)
                     st.session_state.toast = {"msg": f'License "{_n_tool}" added!', "type": "success"}
                     st.rerun()
@@ -2424,28 +2670,33 @@ elif st.session_state.active_tab == "license" and role != "employee":
         if not _licenses_all:
             st.info("No licenses added yet. Use the form above to add one.")
         else:
-            _lhdr = st.columns([0.3, 2.5, 1.2, 1.5, 1.5, 1.4, 0.4, 0.4])
-            for _lc, _ll in zip(_lhdr, ["#", "Tool Name", "No. of Licenses", "Start Date", "End Date", "Status", "", ""]):
-                _lc.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;'
-                             f'letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_ll}</div>',
+            _lhdr = st.columns([0.3, 2.2, 1.0, 1.3, 1.3, 1.4, 0.5, 0.5, 0.5])
+            for _lc, _ll in zip(_lhdr, ["#", "Tool Name", "Licenses", "Start Date", "End Date", "Status", "", "", ""]):
+                _act = _ll in ("Mail", "Edit", "Del")
+                _lc.markdown(f'<div style="font-size:{"7px" if _act else "9px"};font-weight:600;text-transform:uppercase;color:#94A3B8;'
+                             f'letter-spacing:{"0" if _act else ".6px"};padding:5px 0;border-bottom:2px solid #E2E8F0">{_ll}</div>',
                              unsafe_allow_html=True)
             for _lic in _licenses_all:
-                _lr = st.columns([0.3, 2.5, 1.2, 1.5, 1.5, 1.4, 0.4, 0.4])
+                _lr = st.columns([0.3, 2.2, 1.0, 1.3, 1.3, 1.4, 0.5, 0.5, 0.5])
                 _lr[0].markdown(cell(_lic["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
                 _lr[1].markdown(f'<span style="font-size:13px;font-weight:700;color:#111827">{esc(_lic["tool_name"])}</span>', unsafe_allow_html=True)
                 _lr[2].markdown(f'<span style="font-size:13px;font-weight:600;color:#2563EB">{_lic["no_of_licenses"]}</span>', unsafe_allow_html=True)
                 _lr[3].markdown(cell(_lic["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
                 _lr[4].markdown(cell(_lic["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
                 _lr[5].markdown(_lc_expiry_badge(_lic["end_date"]), unsafe_allow_html=True)
+                with _lr[6]:
+                    if st.button("✉", key=f"lc_mail_{_lic['id']}", use_container_width=True):
+                        st.session_state.lc_mail_id = _lic["id"]
+                        st.session_state.lc_edit_id = None
+                        st.rerun()
                 if role == "admin":
-                    with _lr[6]:
-                        st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                    with _lr[7]:
                         if st.button("✏", key=f"lc_e_{_lic['id']}", help="Edit license", use_container_width=True):
                             st.session_state.lc_edit_id = _lic["id"]
+                            st.session_state.lc_mail_id = None
                             st.session_state.sl_edit_id = None
                             st.rerun()
-                    with _lr[7]:
-                        st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                    with _lr[8]:
                         if st.button("🗑", key=f"lc_d_{_lic['id']}", help="Delete license", use_container_width=True):
                             auth.delete_license(_lic["id"])
                             save_to_excel_async(st.session_state.projects)
@@ -2475,6 +2726,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                     _sl_e_end_dt   = _se6.date_input("End Date", value=_parse_ymd(_sl_rec["end_date"]), key="sl_e_end", format="DD/MM/YYYY")
                     _sl_e_start = _sl_e_start_dt.strftime("%Y-%m-%d") if _sl_e_start_dt else ""
                     _sl_e_end   = _sl_e_end_dt.strftime("%Y-%m-%d") if _sl_e_end_dt else ""
+                    _sl_e_email = st.text_input("Client Email (for expiry notifications)", value=_sl_rec.get("client_email", ""), key="sl_e_email", placeholder="client@company.com")
                     _sb1, _sb2 = st.columns([1, 4])
                     if _sb1.button("Save Changes", type="primary", key="sl_save_edit"):
                         if not _sl_e_tool or not _sl_e_client.strip():
@@ -2482,7 +2734,8 @@ elif st.session_state.active_tab == "license" and role != "employee":
                         else:
                             auth.update_sold_license(st.session_state.sl_edit_id, _sl_e_tool,
                                                      _sl_e_client, int(_sl_e_seats),
-                                                     _sl_e_start, _sl_e_end, _sl_e_notes)
+                                                     _sl_e_start, _sl_e_end, _sl_e_notes,
+                                                     _sl_e_email)
                             save_to_excel_async(st.session_state.projects)
                             st.session_state.sl_edit_id = None
                             st.session_state.toast = {"msg": "Sold license updated!", "type": "success"}
@@ -2502,6 +2755,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                 _sa3, _sa4 = st.columns(2)
                 _sl_n_seats  = _sa3.number_input("No. of Licenses *", min_value=1, value=1, step=1, key="sl_n_seats")
                 _sl_n_notes  = _sa4.text_input("Notes (optional)", key="sl_n_notes")
+                _sl_n_email  = st.text_input("Client Email (for expiry notifications)", key="sl_n_email", placeholder="client@company.com")
                 _sa5, _sa6 = st.columns(2)
                 _sl_n_start_dt = _sa5.date_input("Start Date (optional)", value=None, key="sl_n_start", format="DD/MM/YYYY")
                 _sl_n_end_dt   = _sa6.date_input("End Date (optional)", value=None, key="sl_n_end", format="DD/MM/YYYY")
@@ -2512,23 +2766,113 @@ elif st.session_state.active_tab == "license" and role != "employee":
                         st.error("Client is required.")
                     else:
                         auth.create_sold_license(_sl_n_tool, _sl_n_client, int(_sl_n_seats),
-                                                 _sl_n_start, _sl_n_end, _sl_n_notes)
+                                                 _sl_n_start, _sl_n_end, _sl_n_notes,
+                                                 _sl_n_email)
                         save_to_excel_async(st.session_state.projects)
                         st.session_state.toast = {"msg": f'Sold license "{_sl_n_tool}" added!', "type": "success"}
                         st.rerun()
 
         # ── Sold License table ───────────────────────────────────────────────
+        # Helper: compute days until expiry
+        def _days_left(end_date_str: str):
+            if not end_date_str:
+                return None
+            try:
+                return (datetime.strptime(end_date_str, "%Y-%m-%d").date() - datetime.now().date()).days
+            except ValueError:
+                return None
+
+        # ── Mail compose form (shown when a row's Mail button is clicked) ─────
+        if st.session_state.sl_mail_id is not None:
+            _ml_rec = next((x for x in _sold_licenses_all if x["id"] == st.session_state.sl_mail_id), None)
+            if _ml_rec:
+                _ml_dl = _days_left(_ml_rec.get("end_date", ""))
+                if _ml_dl is None:
+                    _ml_status_txt = "No expiry date set"
+                elif _ml_dl < 0:
+                    _ml_status_txt = f"Expired {abs(_ml_dl)} day(s) ago"
+                else:
+                    _ml_status_txt = f"Expiring in {_ml_dl} day(s)"
+                with st.container(border=True):
+                    st.markdown(
+                        f'<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:4px">'
+                        f'Manage Notification Emails — {esc(_ml_rec["tool_name"])}</div>'
+                        f'<div style="font-size:11px;color:#64748B;margin-bottom:12px">'
+                        f'Client: <b>{esc(_ml_rec["client"])}</b> &nbsp;|&nbsp; '
+                        f'Expiry: <b>{_ml_rec["end_date"] or "—"}</b> &nbsp;|&nbsp; '
+                        f'Status: <b>{_ml_status_txt}</b></div>',
+                        unsafe_allow_html=True
+                    )
+                    _ml_emails_raw = st.text_area(
+                        "Notification Email Addresses",
+                        value=_ml_rec.get("client_email", ""),
+                        height=90,
+                        key="sl_mail_recipients",
+                        placeholder="Enter one or more addresses, separated by commas or new lines"
+                    )
+                    _mb1, _mb2, _mb3, _ = st.columns([1, 1.4, 1, 5])
+                    if _mb1.button("Save", type="primary", key="sl_mail_save"):
+                        auth.update_sold_license(
+                            _ml_rec["id"], _ml_rec["tool_name"], _ml_rec["client"],
+                            int(_ml_rec["no_of_licenses"]),
+                            _ml_rec["start_date"], _ml_rec["end_date"],
+                            _ml_rec["notes"], _ml_emails_raw.strip()
+                        )
+                        st.session_state.sl_mail_id = None
+                        st.session_state.toast = {"msg": "Email address(es) saved.", "type": "success"}
+                        st.rerun()
+                    if _mb2.button("Send", key="sl_mail_send"):
+                        import re as _re
+                        _valid_addrs = [a.strip() for a in _re.split(r"[,\n;]+", _ml_emails_raw) if a.strip() and "@" in a.strip()]
+                        if not _valid_addrs:
+                            st.error("Please enter at least one valid email address.")
+                        elif _ml_dl is None:
+                            st.error("This license has no expiry date set — cannot send notification.")
+                        else:
+                            _m_ok, _m_fail, _m_errs = 0, 0, []
+                            for _addr in _valid_addrs:
+                                _ok, _err = email_utils.send_license_expiry_email(
+                                    _addr, _ml_rec["client"],
+                                    _ml_rec["tool_name"], _ml_rec["end_date"], _ml_dl
+                                )
+                                if _ok:   _m_ok += 1
+                                else:     _m_fail += 1; _m_errs.append(f"{_addr}: {_err}")
+                            st.session_state.sl_mail_id = None
+                            st.session_state.toast = {
+                                "msg": f"Sent to {_m_ok} recipient(s)." + (f" {_m_fail} failed — {'; '.join(_m_errs[:2])}" if _m_fail else ""),
+                                "type": "success" if _m_fail == 0 else "error"
+                            }
+                            st.rerun()
+                    if _mb3.button("Cancel", key="sl_mail_cancel"):
+                        st.session_state.sl_mail_id = None
+                        st.rerun()
+
+        # ── Send All Notifications button (90d / 30d / expired) ──────────────
+        _notifiable = [
+            s for s in _sold_licenses_all
+            if s.get("end_date") and _days_left(s["end_date"]) is not None
+            and _days_left(s["end_date"]) <= 90
+        ]
+        if _notifiable and role in ("admin", "lead", "manager"):
+            _snb_col, _ = st.columns([3, 5])
+            if _snb_col.button(f"Send All Expiry Notifications ({len(_notifiable)})", key="sl_send_all", type="primary"):
+                st.session_state.sl_mail_id = None
+                # Open a combined compose for all expiring licenses
+                st.session_state.sl_send_all_trigger = True
+                st.rerun()
+
         st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 12px"><b>{len(_sold_licenses_all)}</b> sold license record(s)</p>', unsafe_allow_html=True)
         if not _sold_licenses_all:
             st.info("No sold licenses recorded yet. Use the form above to add one.")
         else:
-            _slhdr = st.columns([0.3, 2.0, 2.0, 1.0, 1.4, 1.4, 1.4, 1.8, 0.4, 0.4])
-            for _slc, _sll in zip(_slhdr, ["#", "Tool Name", "Client", "Licenses", "Start Date", "End Date", "Status", "Notes", "", ""]):
-                _slc.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;'
-                              f'letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_sll}</div>',
+            _slhdr = st.columns([0.3, 1.8, 1.8, 0.9, 1.2, 1.2, 1.2, 1.5, 0.5, 0.5, 0.5])
+            for _slc, _sll in zip(_slhdr, ["#", "Tool Name", "Client", "Qty", "Start", "End", "Status", "Notes", "", "", ""]):
+                _sact = _sll in ("Mail", "Edit", "Del")
+                _slc.markdown(f'<div style="font-size:{"7px" if _sact else "9px"};font-weight:600;text-transform:uppercase;color:#94A3B8;'
+                              f'letter-spacing:{"0" if _sact else ".6px"};padding:5px 0;border-bottom:2px solid #E2E8F0">{_sll}</div>',
                               unsafe_allow_html=True)
             for _sl in _sold_licenses_all:
-                _slr = st.columns([0.3, 2.0, 2.0, 1.0, 1.4, 1.4, 1.4, 1.8, 0.4, 0.4])
+                _slr = st.columns([0.3, 1.8, 1.8, 0.9, 1.2, 1.2, 1.2, 1.5, 0.5, 0.5, 0.5])
                 _slr[0].markdown(cell(_sl["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
                 _slr[1].markdown(f'<span style="font-size:12px;font-weight:700;color:#111827">{esc(_sl["tool_name"])}</span>', unsafe_allow_html=True)
                 _slr[2].markdown(f'<span style="font-size:12px;color:#374151">{esc(_sl["client"])}</span>', unsafe_allow_html=True)
@@ -2537,15 +2881,20 @@ elif st.session_state.active_tab == "license" and role != "employee":
                 _slr[5].markdown(cell(_sl["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
                 _slr[6].markdown(_lc_expiry_badge(_sl["end_date"]), unsafe_allow_html=True)
                 _slr[7].markdown(cell(_sl["notes"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                # Per-row Mail button — opens the multi-email compose form above
+                with _slr[8]:
+                    if st.button("✉", key=f"sl_mail_{_sl['id']}", use_container_width=True):
+                        st.session_state.sl_mail_id = _sl["id"]
+                        st.session_state.sl_edit_id = None
+                        st.rerun()
                 if role == "admin":
-                    with _slr[8]:
-                        st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                    with _slr[9]:
                         if st.button("✏", key=f"sl_e_{_sl['id']}", help="Edit sold license", use_container_width=True):
                             st.session_state.sl_edit_id = _sl["id"]
+                            st.session_state.sl_mail_id = None
                             st.session_state.lc_edit_id = None
                             st.rerun()
-                    with _slr[9]:
-                        st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                    with _slr[10]:
                         if st.button("🗑", key=f"sl_d_{_sl['id']}", help="Delete sold license", use_container_width=True):
                             auth.delete_sold_license(_sl["id"])
                             save_to_excel_async(st.session_state.projects)
