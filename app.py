@@ -1029,40 +1029,40 @@ st.markdown("""
 [data-testid="stAppViewContainer"] > .main > .block-container {
     padding-top:0 !important;
 }
-/* ── Title bar: fixed full-viewport-width, 52px tall ─────────────────────── */
+/* ── Title bar: fixed full-viewport-width, 62px tall ─────────────────────── */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) {
     position:fixed !important; top:0 !important; left:0 !important; right:0 !important;
     width:100vw !important; max-width:100vw !important;
     background:#0F172A !important; padding:0 !important; margin:0 !important;
     z-index:1000 !important; box-shadow:0 2px 12px rgba(0,0,0,.30) !important;
-    height:52px !important; display:flex !important; align-items:center !important; gap:0 !important;
+    height:62px !important; display:flex !important; align-items:center !important; gap:0 !important;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div {
     background:#0F172A !important; display:flex !important;
-    align-items:center !important; padding:0 !important; height:52px !important;
+    align-items:center !important; padding:0 !important; height:62px !important;
 }
 /* Logo column inner wrappers */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child > div,
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child [data-testid="stVerticalBlock"],
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child [class*="element-container"] {
     display:flex !important; align-items:center !important;
-    padding:0 !important; margin:0 !important; height:52px !important; width:100% !important;
+    padding:0 !important; margin:0 !important; height:62px !important; width:100% !important;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:first-child { padding-left:20px !important; }
 /* Stats column: right-aligned */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) {
-    justify-content:flex-end !important; padding-right:52px !important;
+    justify-content:flex-end !important; padding-right:62px !important;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) > div,
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) [data-testid="stVerticalBlock"],
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:nth-child(2) [class*="element-container"] {
     display:flex !important; align-items:center !important; justify-content:flex-end !important;
-    padding:0 !important; margin:0 !important; height:52px !important; width:100% !important;
+    padding:0 !important; margin:0 !important; height:62px !important; width:100% !important;
 }
 /* ⋮ column: independently fixed to top-right corner */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child {
     position:fixed !important; top:0 !important; right:0 !important;
-    width:44px !important; height:52px !important;
+    width:44px !important; height:62px !important;
     display:flex !important; align-items:center !important; justify-content:center !important;
     padding:0 !important; margin:0 !important; z-index:1001 !important;
     background:#0F172A !important;
@@ -1072,7 +1072,7 @@ div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child [data-tes
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child [class*="element-container"] {
     padding:0 !important; margin:0 !important; gap:0 !important;
     display:flex !important; align-items:center !important; justify-content:center !important;
-    width:auto !important; min-width:0 !important; height:52px !important;
+    width:auto !important; min-width:0 !important; height:62px !important;
 }
 /* ⋮ button */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button,
@@ -1151,8 +1151,8 @@ with _hdr_l:
         f'<div style="display:flex;align-items:center;gap:14px">'
         f'<div style="width:38px;height:38px;background:linear-gradient(135deg,#3B82F6,#6366F1);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;letter-spacing:-0.5px;box-shadow:0 0 0 1px rgba(255,255,255,.12)">Q</div>'
         f'<div>'
-        f'<div style="font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:13px;color:#F1F5F9;letter-spacing:2px;text-transform:uppercase">QUALESCE</div>'
-        f'<div style="font-size:9px;color:#94A3B8;letter-spacing:1.2px;text-transform:uppercase;font-weight:500;margin-top:1px">AI Project Manager</div>'
+        f'<div style="font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:16px;color:#F1F5F9;letter-spacing:2px;text-transform:uppercase">QUALESCE</div>'
+        f'<div style="font-size:11px;color:#94A3B8;letter-spacing:1.2px;text-transform:uppercase;font-weight:500;margin-top:1px">AI Project Manager</div>'
         f'</div>'
         f'</div>'
         f'</div>',
@@ -1161,14 +1161,14 @@ with _hdr_l:
 with _hdr_m:
     st.markdown(
         f'<div style="display:flex;align-items:center;justify-content:flex-end;height:62px;width:100%">'
-        f'<div style="font-size:12px;color:#94A3B8;display:flex;align-items:center;gap:10px;line-height:1">'
-        f'<span style="width:7px;height:7px;border-radius:50%;background:#10B981;box-shadow:0 0 8px #10B981;display:inline-block;vertical-align:middle;flex-shrink:0"></span>'
+        f'<div style="font-size:14px;color:#94A3B8;display:flex;align-items:center;gap:10px;line-height:1">'
+        f'<span style="width:8px;height:8px;border-radius:50%;background:#10B981;box-shadow:0 0 8px #10B981;display:inline-block;vertical-align:middle;flex-shrink:0"></span>'
         f'<b style="color:#E2E8F0;font-weight:600;vertical-align:middle">{stats["total"]}</b>'
         f'<span style="vertical-align:middle">projects live</span>'
         f'{_new_badge}'
         f'<span style="color:#475569;vertical-align:middle">|</span>'
         f'<span style="color:#E2E8F0;font-weight:600;vertical-align:middle">{esc(cu["name"])}</span>'
-        f'<span style="background:#1E3A8A;color:#93C5FD;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;vertical-align:middle">{esc(cu["role"])}</span>'
+        f'<span style="background:#1E3A8A;color:#93C5FD;font-size:11px;font-weight:700;padding:2px 10px;border-radius:10px;text-transform:uppercase;vertical-align:middle">{esc(cu["role"])}</span>'
         f'</div>'
         f'</div>',
         unsafe_allow_html=True
@@ -1231,35 +1231,35 @@ st.markdown("""
 [class*="element-container"]:has(> div[data-testid="stHorizontalBlock"]:has(.q-nav-bar)) {
     margin:0 !important; padding:0 !important;
 }
-/* Nav row: equal-width columns, 35px space above and below */
+/* Nav row: equal-width columns */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) {
     align-items:center !important; gap:3px !important;
-    padding:20px 8px !important; margin:0 !important;
+    padding:10px 8px 10px 8px !important; margin:0 !important;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) > div {
     display:flex !important; align-items:center !important;
     padding:0 !important; margin:0 !important;
-    height:26px !important; overflow:hidden !important;
+    height:32px !important; overflow:hidden !important;
 }
 /* Collapse the marker-span wrapper so it takes zero space in column 0 */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [class*="element-container"]:has(.q-nav-bar) {
     display:none !important;
 }
-/* Lock every wrapper level to 26px so primary/secondary renders identically */
+/* Lock every wrapper level to 32px so primary/secondary renders identically */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) > div > div,
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [data-testid="stVerticalBlock"],
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [class*="element-container"],
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton {
     padding:0 !important; margin:0 !important; width:100% !important;
-    height:26px !important; overflow:hidden !important;
+    height:32px !important; overflow:hidden !important;
     display:flex !important; align-items:center !important;
 }
 /* Nav buttons: same height for active (primary) and inactive (secondary) */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton button {
     font-size:10px !important; font-weight:700 !important;
     padding:0 6px !important;
-    height:26px !important; min-height:0 !important; max-height:26px !important;
-    line-height:26px !important; border-radius:4px !important; letter-spacing:.2px !important;
+    height:32px !important; min-height:0 !important; max-height:32px !important;
+    line-height:32px !important; border-radius:4px !important; letter-spacing:.2px !important;
     width:100% !important;
     background:#DC2626 !important; color:#fff !important; border-color:#DC2626 !important;
     display:flex !important; align-items:center !important; justify-content:center !important;
@@ -1315,7 +1315,7 @@ else:
 if not gsheets.is_configured() and excel_mtime() != st.session_state.excel_mtime:
     st.warning("Excel file changed externally — click **Refresh** to reload.")
 
-st.markdown("---")
+st.markdown('<hr style="margin:2px 0;border:none;border-top:1px solid #E2E8F0">', unsafe_allow_html=True)
 df = st.session_state.projects   # re-bind after possible sync
 _HDR_STYLE = 'font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;letter-spacing:.7px;padding:5px 0;border-bottom:2px solid #E2E8F0'
 
