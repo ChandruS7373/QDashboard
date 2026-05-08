@@ -1513,7 +1513,7 @@ if st.session_state.show_modal is not None and role in ("admin", "lead", "manage
     st.markdown("---")
 
 # ── CONFIRM DELETE ────────────────────────────────────────────────────────────
-if st.session_state.confirm_delete and role == "admin":
+if st.session_state.confirm_delete and role in ("admin", "lead", "manager"):
     cd = st.session_state.confirm_delete
     st.warning(f"Delete \"{cd['name']}\"? This cannot be undone.")
     da, db, _ = st.columns([1,1,4])
@@ -2102,7 +2102,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             st.info("No projects match the current filters.")
             return
 
-        is_admin   = (role == "admin")
+        is_admin   = (role in ("admin", "lead", "manager"))
         can_edit   = role in ("admin", "lead", "manager")
         col_widths = [10, 0.4, 0.4] if is_admin else ([10, 0.4] if can_edit else [10])
 
@@ -2248,7 +2248,7 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
         return '<span style="font-size:10px;color:#CBD5E1">—</span>'
 
     def _render_poc_table(data, tab_key):
-        _is_adm = (role == "admin")
+        _is_adm = (role in ("admin", "lead", "manager"))
         _can_ed = role in ("admin", "lead", "manager")
         _cw = [10, 0.4, 0.4] if _is_adm else ([10, 0.4] if _can_ed else [10])
         if data.empty:
