@@ -24,7 +24,8 @@ if "db_initialized" not in st.session_state:
     auth.init_db()
     st.session_state.db_initialized = True
 
-email_utils.start_license_notification_scheduler()
+if hasattr(email_utils, "start_license_notification_scheduler"):
+    email_utils.start_license_notification_scheduler()
 
 # ── EXCEL PATH ────────────────────────────────────────────────────────────────
 EXCEL_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects.xlsx")
