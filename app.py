@@ -9,6 +9,7 @@ import re
 import threading
 from datetime import datetime, date, timedelta
 from jinja2 import Template
+from urllib.parse import quote as urlquote
 import auth
 import email_utils
 import gsheets
@@ -31,7 +32,11 @@ if hasattr(email_utils, "start_license_notification_scheduler"):
 EXCEL_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects.xlsx")
 USERS_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.xlsx")
 EXCEL_COLS = ["id","name","client","lead","employee","status","proj_type","start","end","due_date","po","desc",
-              "manual_hrs","auto_hrs","cost_per_hr","hours_saved","cost_saved","roi_pct","is_new","is_active"]
+              "manual_hrs","auto_hrs","cost_per_hr","hours_saved","cost_saved","roi_pct","is_new","is_active",
+              "ckpt_pdd_sdd_start","ckpt_pdd_sdd_end",
+              "ckpt_development_start","ckpt_development_end",
+              "ckpt_uat_start","ckpt_uat_end",
+              "ckpt_deployment_start","ckpt_deployment_end"]
 
 PORTAL_URL = "https://q-dashboard.streamlit.app/"
 
@@ -1435,6 +1440,32 @@ if st.session_state.show_modal is not None and role in ("admin", "lead", "manage
         _due_dt = _dc3.date_input("Due Date (optional)", value=_due_dt_default, key="modal_due", format="DD/MM/YYYY")
         due_date = _due_dt.strftime("%d/%m/%Y") if _due_dt else ""
 
+        # ── Checkpoint phase dates ──────────────────────────────────────────
+        st.markdown("**Checkpoint Dates** *(optional — enter start & end for each phase)*")
+        _ckpt_form_phases = [
+            ("PDD / SDD",   "pdd_sdd"),
+            ("Development", "development"),
+            ("UAT",         "uat"),
+            ("Deployment",  "deployment"),
+        ]
+        _ckpt_form_vals = {}
+        for _cfl, _cfk in _ckpt_form_phases:
+            _cfa, _cfb = st.columns(2)
+            _cf_rs = str(edit_row.get("ckpt_" + _cfk + "_start", "")).strip()
+            _cf_re = str(edit_row.get("ckpt_" + _cfk + "_end",   "")).strip()
+            _cf_ds = _parse_dmy(_cf_rs) if _cf_rs and _cf_rs != "nan" else None
+            _cf_de = _parse_dmy(_cf_re) if _cf_re and _cf_re != "nan" else None
+            _cf_sd = _cfa.date_input(
+                _cfl + " Start", value=_cf_ds,
+                key="modal_ckpt_" + _cfk + "_s", format="DD/MM/YYYY"
+            )
+            _cf_ed = _cfb.date_input(
+                _cfl + " End", value=_cf_de,
+                key="modal_ckpt_" + _cfk + "_e", format="DD/MM/YYYY"
+            )
+            _ckpt_form_vals["ckpt_" + _cfk + "_start"] = _cf_sd.strftime("%d/%m/%Y") if _cf_sd else ""
+            _ckpt_form_vals["ckpt_" + _cfk + "_end"]   = _cf_ed.strftime("%d/%m/%Y") if _cf_ed else ""
+
         po     = c1.text_input("PO Number",           value=edit_row.get("po",""))
         desc   = c2.text_input("Description",         value=edit_row.get("desc",""))
         _is_active_raw = str(edit_row.get("is_active", "True")).strip().lower()
@@ -1479,6 +1510,7 @@ if st.session_state.show_modal is not None and role in ("admin", "lead", "manage
                         "roi_pct":     str(roi["pct"])   if roi else "",
                         "is_new": True,
                         "is_active": is_active,
+                        **_ckpt_form_vals,
                     }
                     st.session_state.projects = pd.concat(
                         [st.session_state.projects, pd.DataFrame([new_row])], ignore_index=True)
@@ -1500,7 +1532,8 @@ if st.session_state.show_modal is not None and role in ("admin", "lead", "manage
                                       "hours_saved":str(roi["saved"]) if roi else r.get("hours_saved",""),
                                       "cost_saved": str(roi["cost"])  if roi else r.get("cost_saved",""),
                                       "roi_pct":    str(roi["pct"])   if roi else r.get("roi_pct",""),
-                                      "is_active":  is_active})
+                                      "is_active":  is_active,
+                                      **_ckpt_form_vals})
                         records.append(r)
                     st.session_state.projects = pd.DataFrame(records)
                     st.session_state.toast = {"msg": f'"{name}" updated!', "type": "success"}
@@ -1668,6 +1701,44 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
     dash_df    = _dash_df_pre
     dash_stats = stats
 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── PROJECT TYPE BREAKDOWN ────────────────────────────────────────────────
+    st.markdown(
+        '<h3 style="font-size:15px;font-weight:700;color:#0F172A;margin:0 0 10px;letter-spacing:-.2px">'
+        'Project Type Breakdown</h3>',
+        unsafe_allow_html=True
+    )
+    _pt_df = df.copy()
+    _pt_type_col = _pt_df["proj_type"].str.strip().str.lower() if "proj_type" in _pt_df.columns else pd.Series([], dtype=str)
+    _pt_stat_col = _pt_df["status"].str.strip().str.lower()    if "status"    in _pt_df.columns else pd.Series([], dtype=str)
+
+    _ai_count       = int((_pt_type_col == "ai agent").sum())
+    _rpa_count      = int((_pt_type_col == "rpa").sum())
+    _presales_count = int(_pt_stat_col.isin(["presales", "internal poc", "external poc"]).sum())
+    _other_count    = int(len(_pt_df) - _ai_count - _rpa_count - _presales_count)
+    _other_count    = max(_other_count, 0)
+
+    _type_cards = [
+        ("AI Agent", "AI",  "#6366F1", _ai_count),
+        ("RPA",      "RPA", "#F59E0B", _rpa_count),
+        ("Presales", "PRE", "#10B981", _presales_count),
+        ("Other",    "OTH", "#94A3B8", _other_count),
+    ]
+    _tc_cols = st.columns(4)
+    for _tc_col, (_tc_lbl, _tc_ico, _tc_clr, _tc_cnt) in zip(_tc_cols, _type_cards):
+        _tc_col.markdown(
+            f'<div style="background:linear-gradient(135deg,{_tc_clr}18,{_tc_clr}06);'
+            f'border:1.5px solid {_tc_clr}66;border-radius:12px;padding:18px 10px 14px;'
+            f'text-align:center;min-height:90px">'
+            f'<div style="font-size:11px;font-weight:700;color:{_tc_clr};letter-spacing:.6px;'
+            f'text-transform:uppercase;margin-bottom:6px">{_tc_lbl}</div>'
+            f'<div style="font-size:28px;font-weight:900;color:{_tc_clr};line-height:1">{_tc_cnt}</div>'
+            f'<div style="font-size:10px;color:#94A3B8;margin-top:4px">'
+            f'project{"s" if _tc_cnt != 1 else ""}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── NOTIFICATION ALERT PANEL ──────────────────────────────────────────────
@@ -1855,18 +1926,26 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
 
     with _chart_c1:
         with st.container(border=True):
-            _pie_title = f"Status Breakdown{_cl_part}{_sl_part}"
-            st.markdown(f'<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">{_pie_title}</div>', unsafe_allow_html=True)
+            _tm_title = f"Status Breakdown{_cl_part}{_sl_part}"
+            st.markdown(f'<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">{_tm_title}</div>', unsafe_allow_html=True)
             if not _pie_df.empty:
                 _sc = _pie_df["status"].value_counts().reset_index()
                 _sc.columns = ["status", "count"]
                 _color_map = {s: STATUS_STYLES.get(s, {"dot": "#94A3B8"})["dot"] for s in _sc["status"]}
-                fig = px.pie(_sc, names="status", values="count", color="status",
-                             color_discrete_map=_color_map, hole=0.45)
-                fig.update_layout(margin=dict(t=0,b=0,l=0,r=0), height=240,
-                                  legend=dict(font=dict(size=9), orientation="v"),
-                                  paper_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, use_container_width=True)
+                _tm_fig = px.treemap(
+                    _sc, path=["status"], values="count",
+                    color="status", color_discrete_map=_color_map,
+                )
+                _tm_fig.update_traces(
+                    textinfo="label+value",
+                    textfont=dict(size=12),
+                    hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Share: %{percentRoot:.1%}<extra></extra>",
+                )
+                _tm_fig.update_layout(
+                    margin=dict(t=0, b=0, l=0, r=0), height=240,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(_tm_fig, use_container_width=True)
             else:
                 st.info("No data for current filter.")
 
@@ -1896,6 +1975,358 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                 st.plotly_chart(_bar_fig, use_container_width=True)
             else:
                 st.info("No client data available.")
+
+    # ── SALES PERSPECTIVE SECTION ────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+        '<span style="font-size:14px;font-weight:800;color:#0F172A">Sales Perspective</span>'
+        '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+        'background:#0EA5E920;color:#0EA5E9;border:1px solid #0EA5E940">Deals &amp; Conversion</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    # Compute sales-specific slices from the current client-filtered df
+    _sp_presales   = dash_df[dash_df["status"] == "Presales"]
+    _sp_poc        = dash_df[dash_df["status"].str.contains("POC", na=False)]
+    _sp_pdd        = dash_df[dash_df["status"] == "PDD"]
+    _sp_inprog     = dash_df[dash_df["status"] == "In Progress"]
+    _sp_uat        = dash_df[dash_df["status"] == "UAT"]
+    _sp_rm         = dash_df[dash_df["status"] == "R&M"]
+    _sp_completed  = dash_df[dash_df["status"] == "Completed"]
+    _sp_disc       = dash_df[dash_df["status"] == "Discontinued"]
+    _sp_pipeline   = len(_sp_presales) + len(_sp_poc) + len(_sp_pdd)
+    _sp_won        = len(_sp_inprog) + len(_sp_rm) + len(_sp_completed) + len(_sp_uat)
+    _sp_win_rate   = round((_sp_won / max(_sp_won + len(_sp_disc), 1)) * 100)
+
+    # At-risk: active projects whose end date has passed
+    _today_sp = date.today()
+    def _sp_is_overdue(row):
+        end_val = row.get("end", "")
+        if not end_val or not str(end_val).strip():
+            return False
+        s = str(end_val).strip()
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(s, fmt).date() < _today_sp
+            except ValueError:
+                pass
+        return False
+
+    _sp_at_risk_statuses = {"In Progress", "UAT", "R&M", "PDD", "Presales"}
+    _sp_at_risk_df = dash_df[
+        dash_df.apply(_sp_is_overdue, axis=1) &
+        dash_df["status"].isin(_sp_at_risk_statuses)
+    ]
+    _sp_at_risk_count = len(_sp_at_risk_df)
+
+    # Sales KPI cards
+    _sk1, _sk2, _sk3, _sk4, _sk5 = st.columns(5)
+    _sales_kpi_data = [
+        (_sk1, "Presales",    len(_sp_presales),   "#0EA5E9", "🎯"),
+        (_sk2, "POC Active",  len(_sp_poc),        "#8B5CF6", "🔬"),
+        (_sk3, "In Deals", _sp_pipeline,        "#F59E0B", "📋"),
+        (_sk4, "Win Rate",    f"{_sp_win_rate}%",  "#10B981", "🏆"),
+        (_sk5, "At Risk",     _sp_at_risk_count,   "#EF4444", "⚠️"),
+    ]
+    for _sc, _sl, _sv, _scolor, _sico in _sales_kpi_data:
+        _sc.markdown(
+            f'<div style="background:#F8FAFC;border:1.5px solid {_scolor}33;border-radius:12px;'
+            f'padding:14px 16px;text-align:center;border-top:3px solid {_scolor}">'
+            f'<div style="font-size:16px;margin-bottom:4px">{_sico}</div>'
+            f'<div style="font-size:22px;font-weight:800;color:{_scolor};line-height:1">{_sv}</div>'
+            f'<div style="font-size:11px;color:#64748B;margin-top:4px;font-weight:600">{_sl}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Sales funnel + stacked client breakdown
+    _sf_col, _cb_col = st.columns(2)
+
+    with _sf_col:
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">'
+                'Sales Deals Funnel</div>',
+                unsafe_allow_html=True
+            )
+            _funnel_stages = ["Presales / PDD", "POC", "In Progress / UAT", "R&M / Completed"]
+            _funnel_counts = [
+                len(_sp_presales) + len(_sp_pdd),
+                len(_sp_poc),
+                len(_sp_inprog) + len(_sp_uat),
+                len(_sp_rm) + len(_sp_completed),
+            ]
+            _funnel_fig = go.Figure(go.Funnel(
+                y=_funnel_stages,
+                x=_funnel_counts,
+                textinfo="value+percent initial",
+                marker=dict(color=["#0EA5E9", "#8B5CF6", "#06B6D4", "#10B981"]),
+            ))
+            _funnel_fig.update_layout(
+                margin=dict(t=0, b=0, l=0, r=0), height=240,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(size=10),
+            )
+            st.plotly_chart(_funnel_fig, use_container_width=True)
+
+    with _cb_col:
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">'
+                'Project Status per Client</div>',
+                unsafe_allow_html=True
+            )
+            if not dash_df.empty and "client" in dash_df.columns:
+                _cb_statuses = ["R&M", "In Progress", "UAT", "Completed", "Presales"]
+                _cb_src = dash_df[dash_df["status"].isin(_cb_statuses)].copy()
+                _cb_grouped = _cb_src.groupby(["client", "status"]).size().reset_index(name="count")
+                _cb_colors = {
+                    "R&M": "#3B82F6", "In Progress": "#06B6D4",
+                    "UAT": "#F59E0B", "Completed": "#10B981", "Presales": "#0EA5E9",
+                }
+                _cb_fig = go.Figure()
+                for _cst in _cb_statuses:
+                    _cst_data = _cb_grouped[_cb_grouped["status"] == _cst]
+                    if not _cst_data.empty:
+                        _cb_fig.add_trace(go.Bar(
+                            name=_cst,
+                            y=_cst_data["client"],
+                            x=_cst_data["count"],
+                            orientation="h",
+                            marker_color=_cb_colors.get(_cst, "#94A3B8"),
+                        ))
+                _cb_fig.update_layout(
+                    barmode="stack",
+                    margin=dict(t=0, b=0, l=0, r=0), height=240,
+                    legend=dict(font=dict(size=8), orientation="h", y=-0.15),
+                    xaxis=dict(visible=False),
+                    yaxis=dict(tickfont=dict(size=9)),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(_cb_fig, use_container_width=True)
+            else:
+                st.info("No client data available.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── MONTHLY PROJECTS WON & ROI TREND ─────────────────────────────────────────
+    with st.container(border=True):
+        st.markdown(
+            '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+            'text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">'
+            'Monthly Projects Won &amp; ROI Trend — Completion velocity over time</div>',
+            unsafe_allow_html=True
+        )
+        # Build month-wise counts from end date (projects that moved to Completed or R&M)
+        _won_statuses = {"Completed", "R&M"}
+        _trend_df = dash_df[dash_df["status"].isin(_won_statuses)].copy()
+        _month_won = {}
+        _month_cost = {}
+        for _, _tr in _trend_df.iterrows():
+            _ev = str(_tr.get("end", "") or "").strip()
+            for _fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+                try:
+                    _ep = datetime.strptime(_ev, _fmt)
+                    _mk = _ep.strftime("%b %Y")
+                    _month_won[_mk]  = _month_won.get(_mk, 0) + 1
+                    _cs = pd.to_numeric(_tr.get("cost_saved", 0), errors="coerce") or 0
+                    _month_cost[_mk] = _month_cost.get(_mk, 0) + float(_cs)
+                    break
+                except ValueError:
+                    pass
+
+        if _month_won:
+            _all_months = sorted(
+                set(list(_month_won.keys()) + list(_month_cost.keys())),
+                key=lambda x: datetime.strptime(x, "%b %Y")
+            )[-10:]
+            _won_vals  = [_month_won.get(m, 0)  for m in _all_months]
+            _cost_vals = [_month_cost.get(m, 0) for m in _all_months]
+
+            _trend_fig = go.Figure()
+
+            # Line 1 — Projects Won (bars + line)
+            _trend_fig.add_trace(go.Bar(
+                x=_all_months, y=_won_vals,
+                name="Projects Won",
+                marker_color="#C7D2FE",
+                opacity=0.6,
+                yaxis="y1",
+            ))
+            _trend_fig.add_trace(go.Scatter(
+                x=_all_months, y=_won_vals,
+                mode="lines+markers",
+                name="Projects Won",
+                line=dict(color="#4F46E5", width=2.5),
+                marker=dict(size=7, color="#4F46E5"),
+                yaxis="y1",
+                showlegend=False,
+            ))
+
+            # Line 2 — Cost Saved (right axis, only if data exists)
+            if any(v > 0 for v in _cost_vals):
+                _trend_fig.add_trace(go.Scatter(
+                    x=_all_months, y=_cost_vals,
+                    mode="lines+markers",
+                    name="Cost Saved (₹)",
+                    line=dict(color="#10B981", width=2, dash="dot"),
+                    marker=dict(size=6, color="#10B981"),
+                    yaxis="y2",
+                ))
+                _trend_fig.update_layout(
+                    yaxis2=dict(
+                        overlaying="y", side="right",
+                        tickfont=dict(size=8, color="#10B981"),
+                        showgrid=False,
+                        title=dict(text="Cost Saved (₹)", font=dict(size=8, color="#10B981")),
+                    )
+                )
+
+            _trend_fig.update_layout(
+                margin=dict(t=10, b=0, l=0, r=60), height=240,
+                xaxis=dict(tickfont=dict(size=9), tickangle=-30),
+                yaxis=dict(
+                    tickfont=dict(size=9),
+                    title=dict(text="Projects", font=dict(size=8)),
+                    gridcolor="#F1F5F9",
+                ),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                legend=dict(font=dict(size=9), orientation="h", y=-0.25),
+                barmode="overlay",
+            )
+            st.plotly_chart(_trend_fig, use_container_width=True)
+        else:
+            st.info("No completed project end dates found. Update end dates in Projects tab to see the trend.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── CLIENT PORTFOLIO SCORECARD + TOP PROJECTS BY VALUE ───────────────────────
+    _sc_col, _tp_col = st.columns([1.1, 1])
+
+    with _sc_col:
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">'
+                'Client Portfolio Scorecard</div>',
+                unsafe_allow_html=True
+            )
+            _score_clients = sorted(dash_df["client"].dropna().unique()) if "client" in dash_df.columns else []
+            _sc_html = (
+                '<table style="width:100%;border-collapse:collapse">'
+                '<thead><tr>'
+                '<th style="font-size:9px;color:#94A3B8;font-weight:700;text-transform:uppercase;'
+                'padding:5px 8px;border-bottom:2px solid #F1F5F9;text-align:left">Client</th>'
+                '<th style="font-size:9px;color:#94A3B8;font-weight:700;text-transform:uppercase;'
+                'padding:5px 8px;border-bottom:2px solid #F1F5F9;text-align:center">Active</th>'
+                '<th style="font-size:9px;color:#94A3B8;font-weight:700;text-transform:uppercase;'
+                'padding:5px 8px;border-bottom:2px solid #F1F5F9;text-align:center">Done</th>'
+                '<th style="font-size:9px;color:#94A3B8;font-weight:700;text-transform:uppercase;'
+                'padding:5px 8px;border-bottom:2px solid #F1F5F9;text-align:center">Deals</th>'
+                '<th style="font-size:9px;color:#94A3B8;font-weight:700;text-transform:uppercase;'
+                'padding:5px 8px;border-bottom:2px solid #F1F5F9;text-align:center">Health</th>'
+                '</tr></thead><tbody>'
+            )
+            for _sc_client in _score_clients:
+                _cdf = dash_df[dash_df["client"] == _sc_client]
+                _c_active   = int(_cdf["status"].isin(["In Progress","UAT","R&M"]).sum())
+                _c_done     = int((_cdf["status"] == "Completed").sum())
+                _c_disc     = int((_cdf["status"] == "Discontinued").sum())
+                _c_pipeline = int(_cdf["status"].isin(["Presales","POC","PDD","Internal POC","External POC"]).sum())
+                _c_total    = len(_cdf)
+                # Health: ratio of active+done vs discontinued
+                _health_score = round(((_c_active + _c_done) / max(_c_total, 1)) * 100)
+                if _health_score >= 75:
+                    _hcolor, _hlabel = "#10B981", "Good"
+                elif _health_score >= 50:
+                    _hcolor, _hlabel = "#F59E0B", "Fair"
+                else:
+                    _hcolor, _hlabel = "#EF4444", "Weak"
+                _sc_html += (
+                    f'<tr style="border-bottom:1px solid #F8FAFC">'
+                    f'<td style="font-size:11px;font-weight:700;color:#0F172A;padding:7px 8px">{_sc_client}</td>'
+                    f'<td style="text-align:center;padding:7px 8px">'
+                    f'<span style="font-size:12px;font-weight:800;color:#3B82F6">{_c_active}</span></td>'
+                    f'<td style="text-align:center;padding:7px 8px">'
+                    f'<span style="font-size:12px;font-weight:800;color:#10B981">{_c_done}</span></td>'
+                    f'<td style="text-align:center;padding:7px 8px">'
+                    f'<span style="font-size:12px;font-weight:800;color:#0EA5E9">{_c_pipeline}</span></td>'
+                    f'<td style="text-align:center;padding:7px 8px">'
+                    f'<span style="font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;'
+                    f'background:{_hcolor}20;color:{_hcolor};border:1px solid {_hcolor}40">{_hlabel}</span>'
+                    f'</td></tr>'
+                )
+            _sc_html += '</tbody></table>'
+            st.markdown(_sc_html, unsafe_allow_html=True)
+            st.markdown(
+                '<div style="display:flex;gap:14px;margin-top:10px">'
+                '<span style="font-size:9px;color:#64748B"><b style="color:#3B82F6">Active</b> = In Progress + UAT + R&amp;M</span>'
+                '<span style="font-size:9px;color:#64748B"><b style="color:#10B981">Done</b> = Completed</span>'
+                '<span style="font-size:9px;color:#64748B"><b style="color:#0EA5E9">Deals</b> = Presales + POC + PDD</span>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+
+    with _tp_col:
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">'
+                'Top Projects by Value Delivered</div>',
+                unsafe_allow_html=True
+            )
+            # Prefer hours_saved, fall back to cost_saved
+            _val_df = dash_df.copy()
+            _val_df["_hrs"]  = pd.to_numeric(_val_df.get("hours_saved",  pd.Series(dtype=float)), errors="coerce").fillna(0)
+            _val_df["_cost"] = pd.to_numeric(_val_df.get("cost_saved",   pd.Series(dtype=float)), errors="coerce").fillna(0)
+            _val_df["_roi"]  = pd.to_numeric(_val_df.get("roi_pct",      pd.Series(dtype=float)), errors="coerce").fillna(0)
+            _val_df["_score"] = _val_df["_hrs"] + (_val_df["_cost"] / 1000) + _val_df["_roi"]
+            _top_proj = _val_df[_val_df["_score"] > 0].nlargest(8, "_score")
+
+            if not _top_proj.empty:
+                _tp_names  = [str(n)[:30] + ("…" if len(str(n)) > 30 else "") for n in _top_proj["name"]]
+                _tp_scores = _top_proj["_hrs"].tolist()
+                _tp_labels = [
+                    f"{int(h)}h saved" if h > 0 else
+                    (f"₹{int(c):,}" if c > 0 else f"{int(r)}% ROI")
+                    for h, c, r in zip(_top_proj["_hrs"], _top_proj["_cost"], _top_proj["_roi"])
+                ]
+                _tp_colors = [
+                    STATUS_STYLES.get(str(s), {"dot": "#94A3B8"})["dot"]
+                    for s in _top_proj["status"]
+                ]
+                _tp_fig = go.Figure(go.Bar(
+                    y=_tp_names, x=_tp_scores,
+                    orientation="h",
+                    marker=dict(color=_tp_colors, opacity=0.85),
+                    text=_tp_labels,
+                    textposition="outside",
+                    textfont=dict(size=9),
+                ))
+                _tp_fig.update_layout(
+                    margin=dict(t=0, b=0, l=0, r=70), height=260,
+                    xaxis=dict(visible=False),
+                    yaxis=dict(tickfont=dict(size=9), autorange="reversed"),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(_tp_fig, use_container_width=True)
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;margin-top:4px">'
+                    'Bar length = hours saved. Label shows hours saved / cost saved / ROI %.</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.info("Add hours_saved or cost_saved data in the Projects tab to see top performers.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # ── PROJECT DETAIL PANEL (always visible; slicer narrows the view) ───────────
     _detail_key = st.session_state.dash_slicer
@@ -2043,6 +2474,296 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "projects" and role != "employee":
 
+    if "proj_tracker_open" not in st.session_state:
+        st.session_state["proj_tracker_open"] = None
+
+    # ── Tracker detail page (full-screen) ──────────────────────────────────────
+    if st.session_state.get("proj_tracker_open"):
+        _trk_sel = st.session_state["proj_tracker_open"]
+
+        _bk_col, _ttl_col = st.columns([1, 9])
+        with _bk_col:
+            if st.button("← Back", key="proj_tracker_back", use_container_width=True):
+                st.session_state["proj_tracker_open"] = None
+                st.rerun()
+        with _ttl_col:
+            st.markdown(
+                '<div style="display:flex;align-items:center;gap:10px;margin-bottom:2px">'
+                '<span style="font-size:16px;font-weight:800;color:#0F172A">Project Tracker</span>'
+                '<span style="font-size:11px;font-weight:600;padding:3px 12px;border-radius:20px;'
+                'background:#8B5CF620;color:#7C3AED;border:1px solid #8B5CF640">'
+                + esc(_trk_sel) + '</span>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+
+        _trk_match = df[df["name"] == _trk_sel]
+        if _trk_match.empty:
+            st.warning("Project not found.")
+        else:
+            _trk_row = _trk_match.iloc[0]
+
+            def _trk_v(key, fallback="—"):
+                v = _trk_row.get(key, fallback)
+                s = str(v).strip()
+                return fallback if s in ("", "nan", "None", "NaN") else s
+
+            _trk_status = _trk_v("status", "")
+            _trk_color  = STATUS_STYLES.get(_trk_status, {"dot": "#94A3B8"})["dot"]
+            _trk_start  = _trk_v("start", "")
+            _trk_end    = _trk_v("end", "")
+            _trk_due    = _trk_v("due_date", "")
+            _trk_hrs    = _trk_v("hours_saved", "")
+            _trk_cost   = _trk_v("cost_saved", "")
+            _trk_roi    = _trk_v("roi_pct", "")
+
+            _tc1, _tc2 = st.columns([1, 1.3])
+
+            with _tc1:
+                with st.container(border=True):
+                    st.markdown(
+                        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
+                        '<div style="width:10px;height:10px;border-radius:50%;background:'
+                        + _trk_color + ';box-shadow:0 0 6px ' + _trk_color + '40"></div>'
+                        '<span style="font-size:13px;font-weight:800;color:#0F172A">'
+                        + esc(_trk_sel) + '</span></div>',
+                        unsafe_allow_html=True
+                    )
+                    def _trk_field(lbl, val, col="#374151"):
+                        return (
+                            '<div style="display:flex;gap:8px;padding:6px 0;'
+                            'border-bottom:1px solid #F8FAFC">'
+                            '<div style="font-size:10px;font-weight:700;color:#94A3B8;'
+                            'min-width:80px;flex-shrink:0">' + lbl + '</div>'
+                            '<div style="font-size:11px;color:' + col + ';font-weight:600;'
+                            'word-break:break-word">' + esc(str(val)) + '</div>'
+                            '</div>'
+                        )
+                    _trk_details = (
+                        _trk_field("Client",   _trk_v("client"))
+                      + _trk_field("Lead",     _trk_v("lead"))
+                      + _trk_field("Employee", _trk_v("employee"))
+                      + _trk_field("Status",   _trk_status, _trk_color)
+                      + _trk_field("PO No.",   _trk_v("po"))
+                      + _trk_field("Start",    fmt_date(_trk_start) or "—")
+                      + _trk_field("End",      fmt_date(_trk_end)   or "Ongoing")
+                      + _trk_field("Due Date", fmt_date(_trk_due)   or "—")
+                    )
+                    _desc = _trk_v("desc", "")
+                    if _desc and _desc != "—":
+                        _trk_details += _trk_field("Description", _desc)
+                    st.markdown(_trk_details, unsafe_allow_html=True)
+
+            with _tc2:
+                with st.container(border=True):
+                    st.markdown(
+                        '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                        'text-transform:uppercase;letter-spacing:.8px;margin-bottom:14px">'
+                        'Timeline &amp; Metrics</div>',
+                        unsafe_allow_html=True
+                    )
+                    _trk_today = date.today()
+                    _trk_sd = _trk_ed = None
+                    for _dfmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+                        try: _trk_sd = datetime.strptime(_trk_start, _dfmt).date(); break
+                        except (ValueError, TypeError): pass
+                    for _dfmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+                        try: _trk_ed = datetime.strptime(_trk_end, _dfmt).date(); break
+                        except (ValueError, TypeError): pass
+
+                    if _trk_sd:
+                        _ref_e   = _trk_ed if _trk_ed else _trk_today
+                        _dur     = max((_ref_e - _trk_sd).days, 1)
+                        _elapsed = max(min((_trk_today - _trk_sd).days, _dur), 0)
+                        _pct     = round((_elapsed / _dur) * 100)
+                        _tl_c    = ("#10B981" if _trk_status == "Completed" else
+                                    "#EF4444" if (_trk_ed and _trk_today > _trk_ed
+                                                  and _trk_status not in ("Completed","Discontinued"))
+                                    else "#3B82F6")
+                        _tl_lbl  = ("Completed" if _trk_status == "Completed" else
+                                    "Overdue"   if (_trk_ed and _trk_today > _trk_ed) else
+                                    str(_pct) + "% elapsed")
+                        st.markdown(
+                            '<div style="margin-bottom:14px">'
+                            '<div style="display:flex;justify-content:space-between;'
+                            'font-size:10px;color:#64748B;margin-bottom:5px">'
+                            '<span>Start: ' + (fmt_date(_trk_start) or "—") + '</span>'
+                            '<span style="font-weight:700;color:' + _tl_c + '">' + _tl_lbl + '</span>'
+                            '<span>End: ' + (fmt_date(_trk_end) if _trk_end else "Ongoing") + '</span>'
+                            '</div>'
+                            '<div style="background:#F1F5F9;border-radius:8px;height:14px;overflow:hidden">'
+                            '<div style="width:' + str(min(_pct, 100)) + '%;height:100%;'
+                            'background:' + _tl_c + ';border-radius:8px;transition:width .3s">'
+                            '</div></div>'
+                            '<div style="font-size:9px;color:#94A3B8;margin-top:4px">'
+                            + str(_elapsed) + ' of ' + str(_dur) + ' days</div>'
+                            '</div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            '<div style="font-size:11px;color:#94A3B8;margin-bottom:14px">'
+                            'No start date — set it in the project form.</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    _roi_html = ""
+                    if _trk_hrs not in ("", "—", "0", "0.0"):
+                        _roi_html += (
+                            '<div style="flex:1;background:#F0FDF4;border-radius:10px;'
+                            'padding:12px 14px;border-top:3px solid #10B981;text-align:center">'
+                            '<div style="font-size:18px;font-weight:900;color:#059669">'
+                            + _trk_hrs + '</div>'
+                            '<div style="font-size:10px;color:#14532D;margin-top:3px">Hours Saved</div></div>'
+                        )
+                    if _trk_cost not in ("", "—", "0", "0.0"):
+                        _roi_html += (
+                            '<div style="flex:1;background:#EFF6FF;border-radius:10px;'
+                            'padding:12px 14px;border-top:3px solid #3B82F6;text-align:center">'
+                            '<div style="font-size:18px;font-weight:900;color:#1D4ED8">'
+                            + chr(8377) + _trk_cost + '</div>'
+                            '<div style="font-size:10px;color:#1E40AF;margin-top:3px">Cost Saved</div></div>'
+                        )
+                    if _trk_roi not in ("", "—", "0", "0.0"):
+                        _roi_html += (
+                            '<div style="flex:1;background:#FFF7ED;border-radius:10px;'
+                            'padding:12px 14px;border-top:3px solid #F97316;text-align:center">'
+                            '<div style="font-size:18px;font-weight:900;color:#C2410C">'
+                            + _trk_roi + '%</div>'
+                            '<div style="font-size:10px;color:#9A3412;margin-top:3px">ROI</div></div>'
+                        )
+                    if _roi_html:
+                        st.markdown(
+                            '<div style="display:flex;gap:10px;margin-bottom:4px">'
+                            + _roi_html + '</div>',
+                            unsafe_allow_html=True
+                        )
+
+            # ── Checkpoint stepper ────────────────────────────────────────────
+            _ckpt_phases = [
+                ("PDD / SDD",   "pdd_sdd"),
+                ("Development", "development"),
+                ("UAT",         "uat"),
+                ("Deployment",  "deployment"),
+            ]
+            _ck_today = date.today()
+
+            def _ck_parse(s):
+                if not s or str(s).strip() in ("", "nan", "—"): return None
+                for _f in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+                    try: return datetime.strptime(str(s).strip(), _f).date()
+                    except (ValueError, TypeError): pass
+                return None
+
+            _ck_cfg = {
+                "done":    {"bg":"#10B981","fg":"#fff","icon":"✓","anim":"",
+                            "lbl":"Done",    "lbl_c":"#059669","ring":"yes"},
+                "overdue": {"bg":"#EF4444","fg":"#fff","icon":"!","anim":"",
+                            "lbl":"Overdue", "lbl_c":"#DC2626","ring":"yes"},
+                "working": {"bg":"#F59E0B","fg":"#fff","icon":"▶",
+                            "anim":"animation:ckpt-pulse 1.4s ease-in-out infinite",
+                            "lbl":"Working", "lbl_c":"#D97706","ring":"yes"},
+                "pending": {"bg":"#E2E8F0","fg":"#94A3B8","icon":"",  "anim":"",
+                            "lbl":"Pending", "lbl_c":"#94A3B8","ring":"none"},
+            }
+            _ck_line = {
+                "done":    "background:#10B981",
+                "overdue": "background:#EF4444",
+                "working": ("background:linear-gradient(90deg,#F59E0B 0%,#FDE68A 50%,#F59E0B 100%);"
+                            "background-size:200% 100%;animation:ckpt-shimmer 1.6s linear infinite"),
+                "pending": "background:#E2E8F0",
+            }
+
+            _ph_states = []
+            for _phl, _phk in _ckpt_phases:
+                _sk = "ckpt_" + _trk_sel + "_" + _phk + "_done"
+                if _sk not in st.session_state:
+                    st.session_state[_sk] = False
+                _ps = _ck_parse(_trk_v("ckpt_" + _phk + "_start", ""))
+                _pe = _ck_parse(_trk_v("ckpt_" + _phk + "_end",   ""))
+                _pd = st.session_state[_sk]
+                if _pd:                                                         _pst = "done"
+                elif _pe and _ck_today > _pe:                                  _pst = "overdue"
+                elif _ps and _ck_today >= _ps and (_pe is None or _ck_today <= _pe): _pst = "working"
+                else:                                                           _pst = "pending"
+                _ph_states.append({"label":_phl,"key":_phk,
+                                   "start":_ps,"end":_pe,"done":_pd,"state":_pst,"sk":_sk})
+
+            _bubbles = ""
+            for _bi, _ph in enumerate(_ph_states):
+                _cs   = _ck_cfg[_ph["state"]]
+                _icon = _cs["icon"] if _ph["state"] != "pending" else str(_bi + 1)
+                _dr_s = _ph["start"].strftime("%d %b %Y") if _ph["start"] else "Not set"
+                _dr_e = _ph["end"].strftime("%d %b %Y")   if _ph["end"]   else "Not set"
+                _ring = ("box-shadow:0 0 0 5px " + _cs["bg"] + "33;") if _cs["ring"] != "none" else ""
+                _anim = (_cs["anim"] + ";") if _cs["anim"] else ""
+                _bubbles += (
+                    '<div style="display:flex;flex-direction:column;align-items:center;'
+                    'width:80px;flex-shrink:0;flex-grow:0">'
+                    '<div style="width:48px;height:48px;border-radius:50%;'
+                    'background:' + _cs["bg"] + ';color:' + _cs["fg"] + ';'
+                    'display:flex;align-items:center;justify-content:center;'
+                    'font-size:17px;font-weight:900;' + _ring + _anim + '">'
+                    + _icon + '</div>'
+                    '<div style="font-size:10px;font-weight:700;color:#0F172A;'
+                    'margin-top:7px;text-align:center;line-height:1.3;width:78px;word-break:break-word">'
+                    + _ph["label"] + '</div>'
+                    '<div style="font-size:8.5px;font-weight:600;color:' + _cs["lbl_c"] + ';'
+                    'margin-top:3px;text-align:center">' + _cs["lbl"] + '</div>'
+                    '<div style="font-size:8px;color:#94A3B8;text-align:center;'
+                    'margin-top:3px;line-height:1.6;width:78px">'
+                    + _dr_s + '<br>' + _dr_e + '</div>'
+                    '</div>'
+                )
+                if _bi < len(_ph_states) - 1:
+                    _bubbles += (
+                        '<div style="flex:1;min-width:14px;height:3px;'
+                        + _ck_line[_ph["state"]] + ';border-radius:3px;'
+                        'margin-top:24px;align-self:flex-start"></div>'
+                    )
+
+            st.markdown(
+                '<style>'
+                '@keyframes ckpt-pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55)}'
+                '50%{box-shadow:0 0 0 10px rgba(245,158,11,0)}}'
+                '@keyframes ckpt-shimmer{0%{background-position:200% center}'
+                '100%{background-position:-200% center}}'
+                '.ckpt-wrap{display:flex;align-items:flex-start;padding:18px 16px 16px;'
+                'background:#F8FAFC;border-radius:12px;border:1px solid #E2E8F0;'
+                'overflow-x:auto;gap:0;min-width:0;width:100%;box-sizing:border-box}'
+                '</style>'
+                '<div style="margin-top:14px">'
+                '<div style="font-size:9px;color:#94A3B8;font-weight:700;'
+                'text-transform:uppercase;letter-spacing:.9px;margin-bottom:10px">'
+                'Project Checkpoints</div>'
+                '<div class="ckpt-wrap">' + _bubbles + '</div>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.7px;margin:12px 0 4px">'
+                'Mark Phase as Done</div>',
+                unsafe_allow_html=True
+            )
+            _ck_cols = st.columns(4)
+            _ck_changed = False
+            _ck_new_vals = {}
+            for _ci, _ph in enumerate(_ph_states):
+                with _ck_cols[_ci]:
+                    _nd = st.checkbox(_ph["label"], value=_ph["done"],
+                                      key="_ck_" + _trk_sel + "_" + _ph["key"] + "_done")
+                _ck_new_vals[_ph["sk"]] = _nd
+                if _nd != _ph["done"]:
+                    _ck_changed = True
+            if _ck_changed:
+                for _k, _v in _ck_new_vals.items():
+                    st.session_state[_k] = _v
+                st.rerun()
+
+        st.stop()
+
     # ── Shared filter bar (client, project search, active/inactive, add) ────────
     if role in ("admin", "lead", "manager"):
         f1, f2, f3, f4 = st.columns([2, 1.5, 1.5, 0.7])
@@ -2102,9 +2823,25 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             st.info("No projects match the current filters.")
             return
 
-        is_admin   = (role in ("admin", "lead", "manager"))
-        can_edit   = role in ("admin", "lead", "manager")
-        col_widths = [10, 0.4, 0.4] if is_admin else ([10, 0.4] if can_edit else [10])
+        is_admin = (role in ("admin", "lead", "manager"))
+        can_edit = role in ("admin", "lead", "manager")
+        # col 0 = name (clickable), col 1 = rest of data, col 2+ = actions
+        col_widths = [0.5, 2, 7.5, 0.4, 0.4] if is_admin else ([0.5, 2, 7.5, 0.4] if can_edit else [0.5, 2, 7.5])
+
+        # Project name column: <a> hyperlink text (visible) + invisible st.button overlay (handles click).
+        # The <a> never navigates — pointer-events:none. The button is opacity:0, absolutely
+        # positioned over the link text. CSS is scoped per-row via _row_cls, so no bleed.
+        st.markdown(
+            '<style>'
+            '.pname-link{'
+            'color:#2563EB!important;font-size:12px!important;font-weight:400!important;'
+            'text-decoration:underline!important;display:block!important;'
+            'padding:7px 0!important;border-bottom:1px solid #F1F5F9!important;'
+            'word-break:break-word!important;line-height:1.4!important;'
+            'pointer-events:none!important}'
+            '</style>',
+            unsafe_allow_html=True
+        )
 
         # Helper: type badge
         def _type_badge(pt):
@@ -2116,33 +2853,32 @@ elif st.session_state.active_tab == "projects" and role != "employee":
 
         # Header row
         hcols = st.columns(col_widths)
-        hcols[0].markdown(
+        hcols[0].markdown(f'<div style="{_HDR_STYLE}">ID</div>', unsafe_allow_html=True)
+        hcols[1].markdown(f'<div style="{_HDR_STYLE}">Project Name</div>', unsafe_allow_html=True)
+        hcols[2].markdown(
             f'<div style="display:flex;gap:0;align-items:center">'
-            f'<div style="width:3%;{_HDR_STYLE}">ID</div>'
-            f'<div style="width:19%;{_HDR_STYLE}">Project Name</div>'
-            f'<div style="width:11%;{_HDR_STYLE}">Client</div>'
-            f'<div style="width:9%;{_HDR_STYLE}">Lead</div>'
-            f'<div style="width:14%;{_HDR_STYLE}">Employee</div>'
-            f'<div style="width:6%;{_HDR_STYLE}">Type</div>'
-            f'<div style="width:7%;{_HDR_STYLE}">Start</div>'
-            f'<div style="width:7%;{_HDR_STYLE}">End</div>'
-            f'<div style="width:8%;{_HDR_STYLE}">Due Date</div>'
-            f'<div style="width:6%;{_HDR_STYLE}">PO</div>'
-            f'<div style="width:5%;{_HDR_STYLE}">Active</div>'
+            f'<div style="width:12%;{_HDR_STYLE}">Status</div>'
+            f'<div style="width:14%;{_HDR_STYLE}">Client</div>'
+            f'<div style="width:11%;{_HDR_STYLE}">Lead</div>'
+            f'<div style="width:15%;{_HDR_STYLE}">Employee</div>'
+            f'<div style="width:8%;{_HDR_STYLE}">Type</div>'
+            f'<div style="width:9%;{_HDR_STYLE}">Start</div>'
+            f'<div style="width:9%;{_HDR_STYLE}">End</div>'
+            f'<div style="width:11%;{_HDR_STYLE}">Due Date</div>'
+            f'<div style="width:8%;{_HDR_STYLE}">PO</div>'
+            f'<div style="width:3%;{_HDR_STYLE}"></div>'
             f'</div>',
             unsafe_allow_html=True
         )
         if can_edit:
-            hcols[1].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
+            hcols[3].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
         if is_admin:
-            hcols[2].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
+            hcols[4].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
 
-        # Data rows — one st.columns per row, all text in one markdown
+        # Data rows
         for _, row in filtered.iterrows():
             row_status = str(row.get("status",""))
             bg = next((_ROW_BG[s] for s in _ROW_BG if s in row_status), "#FFFFFF")
-            new_tag = ' <span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 5px;border-radius:4px">NEW</span>' if is_new(row) else ""
-            type_badge = _type_badge(str(row.get("proj_type","")).strip())
             lead_val = str(row.get("lead","")).strip()
             lead_html = (f'<span style="font-size:11px;font-weight:600;color:#2563EB">{esc(lead_val)}</span>'
                          if lead_val else '<span style="font-size:11px;color:#CBD5E1">—</span>')
@@ -2152,35 +2888,80 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                 if raw_active in ["false","0","no"] else
                 '<span style="font-size:10px;font-weight:700;background:#ECFDF5;color:#065F46;padding:2px 6px;border-radius:20px">Active</span>'
             )
+            rid   = str(row.get("id",""))
+            pname = str(row.get("name",""))
+            new_tag = ' <span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 5px;border-radius:4px">NEW</span>' if is_new(row) else ""
+            type_badge = _type_badge(str(row.get("proj_type","")).strip())
+            # safe CSS class name for this row's background
+            _row_cls = f"pr-{tab_key}-{rid}".replace(" ", "_").replace(".", "_")
             rcols = st.columns(col_widths)
+
+            # ── Col 0: ID ─────────────────────────────────────────────────────
             rcols[0].markdown(
-                f'<div style="display:flex;gap:0;align-items:center;background:{bg};padding:7px 0;border-bottom:1px solid #F1F5F9">'
-                f'<div style="width:3%;font-size:10px;color:#94A3B8">{esc(str(row.get("id","")))}</div>'
-                f'<div style="width:19%;font-size:12px;font-weight:600;color:#111827">{esc(str(row.get("name","")))}{new_tag}{type_badge}</div>'
-                f'<div style="width:11%;font-size:12px;color:#374151">{esc(str(row.get("client","")))}</div>'
-                f'<div style="width:9%">{lead_html}</div>'
-                f'<div style="width:14%;font-size:11px;color:#374151">{esc(str(row.get("employee","")))}</div>'
-                f'<div style="width:6%">{_type_badge(str(row.get("proj_type","")).strip()) or cell("—","10px","#CBD5E1")}</div>'
-                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(fmt_date(str(row.get("start",""))))}</div>'
-                f'<div style="width:7%;font-size:11px;color:#64748B">{esc(fmt_date(str(row.get("end",""))))}</div>'
-                f'<div style="width:8%">{_due_cell(str(row.get("due_date","")))}</div>'
-                f'<div style="width:6%;font-size:11px;color:#94A3B8">{esc(str(row.get("po","")))}</div>'
-                f'<div style="width:5%">{active_html}</div>'
+                f'<div style="background:{bg};padding:7px 0;border-bottom:1px solid #F1F5F9;'
+                f'font-size:10px;color:#94A3B8;font-weight:600">{esc(rid)}</div>',
+                unsafe_allow_html=True
+            )
+
+            # ── Col 1: Project name — <a> link text + invisible button overlay ──
+            with rcols[1]:
+                # Per-row scoped CSS: row bg + position:relative + invisible stButton overlay
+                st.markdown(
+                    f'<style>'
+                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}){{'
+                    f'background:{bg}!important;position:relative!important}}'
+                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}) [data-testid="stButton"]{{'
+                    f'position:absolute!important;inset:0!important;'
+                    f'opacity:0!important;z-index:10!important;margin:0!important;padding:0!important}}'
+                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}) [data-testid="stButton"]>button{{'
+                    f'width:100%!important;height:100%!important;cursor:pointer!important}}'
+                    f'</style>'
+                    f'<a class="pname-link {_row_cls}">{esc(pname)}</a>',
+                    unsafe_allow_html=True
+                )
+                # Invisible secondary button — opacity:0 overlay, handles click without page reload
+                if st.button("​", key=f"pname_{tab_key}_{rid}", use_container_width=True):
+                    st.session_state["proj_tracker_open"] = pname
+                    st.rerun()
+
+            # ── Status badge ──────────────────────────────────────────────────
+            _ss = STATUS_STYLES.get(row_status, {"bg":"#F1F5F9","text":"#64748B","dot":"#94A3B8"})
+            status_badge = (
+                f'<span style="display:inline-flex;align-items:center;gap:3px;'
+                f'background:{_ss["bg"]};color:{_ss["text"]};'
+                f'font-size:9px;font-weight:700;padding:2px 6px;border-radius:20px;white-space:nowrap">'
+                f'<span style="width:5px;height:5px;border-radius:50%;background:{_ss["dot"]};'
+                f'display:inline-block;flex-shrink:0"></span>{esc(row_status)}</span>'
+            ) if row_status else cell("—","10px","#CBD5E1")
+
+            # ── Col 2: Data columns ───────────────────────────────────────────
+            rcols[2].markdown(
+                f'<div style="display:flex;gap:0;align-items:center;background:{bg};'
+                f'padding:7px 0;border-bottom:1px solid #F1F5F9">'
+                f'<div style="width:12%">{status_badge}</div>'
+                f'<div style="width:14%;font-size:11px;color:#374151">{esc(str(row.get("client","")))}</div>'
+                f'<div style="width:11%">{lead_html}</div>'
+                f'<div style="width:15%;font-size:11px;color:#374151">{esc(str(row.get("employee","")))}</div>'
+                f'<div style="width:8%">{_type_badge(str(row.get("proj_type","")).strip()) or cell("—","10px","#CBD5E1")}</div>'
+                f'<div style="width:9%;font-size:11px;color:#64748B">{esc(fmt_date(str(row.get("start",""))))}</div>'
+                f'<div style="width:9%;font-size:11px;color:#64748B">{esc(fmt_date(str(row.get("end",""))))}</div>'
+                f'<div style="width:11%">{_due_cell(str(row.get("due_date","")))}</div>'
+                f'<div style="width:8%;font-size:11px;color:#94A3B8">{esc(str(row.get("po","")))}</div>'
+                f'<div style="width:3%">{new_tag}</div>'
                 f'</div>',
                 unsafe_allow_html=True
             )
-            rid = str(row.get("id",""))
             if can_edit:
-                with rcols[1]:
+                with rcols[3]:
                     st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
                     if st.button("✏", key=f"edit_{tab_key}_{rid}", help="Edit project", use_container_width=True):
                         st.session_state.show_modal = {"edit": row.to_dict()}
                         st.rerun()
             if is_admin:
-                with rcols[2]:
+                with rcols[4]:
                     st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
                     if st.button("🗑", key=f"del_{tab_key}_{rid}", help="Delete project", use_container_width=True):
-                        st.session_state.confirm_delete = {"id": rid, "name": str(row.get("name",""))}
+                        st.session_state.confirm_delete = {"id": rid, "name": pname}
                         st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
