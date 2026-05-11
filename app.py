@@ -2828,20 +2828,8 @@ elif st.session_state.active_tab == "projects" and role != "employee":
         # col 0 = name (clickable), col 1 = rest of data, col 2+ = actions
         col_widths = [0.5, 2, 7.5, 0.4, 0.4] if is_admin else ([0.5, 2, 7.5, 0.4] if can_edit else [0.5, 2, 7.5])
 
-        # Project name column: <a> hyperlink text (visible) + invisible st.button overlay (handles click).
-        # The <a> never navigates — pointer-events:none. The button is opacity:0, absolutely
-        # positioned over the link text. CSS is scoped per-row via _row_cls, so no bleed.
-        st.markdown(
-            '<style>'
-            '.pname-link{'
-            'color:#2563EB!important;font-size:12px!important;font-weight:400!important;'
-            'text-decoration:underline!important;display:block!important;'
-            'padding:7px 0!important;border-bottom:1px solid #F1F5F9!important;'
-            'word-break:break-word!important;line-height:1.4!important;'
-            'pointer-events:none!important}'
-            '</style>',
-            unsafe_allow_html=True
-        )
+        # Project name column: st.button styled as plain hyperlink text (no button box/border).
+        # Styles are injected per-row via _row_cls so they don't bleed to other buttons.
 
         # Helper: type badge
         def _type_badge(pt):
@@ -2903,24 +2891,27 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                 unsafe_allow_html=True
             )
 
-            # ── Col 1: Project name — <a> link text + invisible button overlay ──
+            # ── Col 1: Project name — button styled as plain hyperlink text ────
             with rcols[1]:
-                # Per-row scoped CSS: row bg + position:relative + invisible stButton overlay
                 st.markdown(
                     f'<style>'
                     f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}){{'
-                    f'background:{bg}!important;position:relative!important}}'
-                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}) [data-testid="stButton"]{{'
-                    f'position:absolute!important;inset:0!important;'
-                    f'opacity:0!important;z-index:10!important;margin:0!important;padding:0!important}}'
+                    f'background:{bg}!important}}'
                     f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}) [data-testid="stButton"]>button{{'
-                    f'width:100%!important;height:100%!important;cursor:pointer!important}}'
+                    f'background:transparent!important;border:none!important;box-shadow:none!important;'
+                    f'color:#2563EB!important;font-size:12px!important;font-weight:400!important;'
+                    f'text-decoration:underline!important;text-align:left!important;'
+                    f'padding:7px 0!important;border-bottom:1px solid #F1F5F9!important;'
+                    f'word-break:break-word!important;line-height:1.4!important;'
+                    f'cursor:pointer!important;border-radius:0!important;width:100%!important}}'
+                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}) [data-testid="stButton"]>button:hover{{'
+                    f'background:transparent!important;color:#1D4ED8!important}}'
                     f'</style>'
-                    f'<a class="pname-link {_row_cls}">{esc(pname)}</a>',
+                    f'<span class="{_row_cls}"></span>',
                     unsafe_allow_html=True
                 )
-                # Invisible secondary button — opacity:0 overlay, handles click without page reload
-                if st.button("​", key=f"pname_{tab_key}_{rid}", use_container_width=True):
+                if st.button(pname, key=f"pname_{tab_key}_{rid}",
+                             use_container_width=True):
                     st.session_state["proj_tracker_open"] = pname
                     st.rerun()
 
@@ -2972,15 +2963,17 @@ elif st.session_state.active_tab == "projects" and role != "employee":
 
     # ── Sub-tab status mapping ─────────────────────────────────────────────────
     _DEV_STATUSES        = {"In Progress", "PDD", "Important"}
-    _RM_STATUSES         = {"R&M"}
-    _COMPLETED_STATUSES  = {"Completed", "Discontinued"}
-    _UAT_STATUSES        = {"UAT"}
+    _RM_STATUSES           = {"R&M"}
+    _COMPLETED_STATUSES    = {"Completed"}
+    _UAT_STATUSES          = {"UAT"}
+    _DISCONTINUED_STATUSES = {"Discontinued"}
 
-    tab_dev, tab_rm, tab_completed, tab_uat = st.tabs([
+    tab_dev, tab_rm, tab_completed, tab_uat, tab_disc = st.tabs([
         "Development",
         "R&M",
         "Completed",
         "UAT",
+        "Discontinued",
     ])
 
     with tab_dev:
@@ -2998,6 +2991,10 @@ elif st.session_state.active_tab == "projects" and role != "employee":
     with tab_uat:
         uat_df   = df[df["status"].isin(_UAT_STATUSES)]
         _render_project_table(_apply_filters(uat_df), tab_key="uat")
+
+    with tab_disc:
+        disc_df  = df[df["status"].isin(_DISCONTINUED_STATUSES)]
+        _render_project_table(_apply_filters(disc_df), tab_key="discontinued")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: PRESALES
