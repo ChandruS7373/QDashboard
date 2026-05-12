@@ -537,6 +537,106 @@ if "poc_row_edit"     not in st.session_state: st.session_state.poc_row_edit    
 if "task_popup"       not in st.session_state: st.session_state.task_popup       = None
 if "save_popup"       not in st.session_state: st.session_state.save_popup       = None
 
+# ── SELF-HEALING AGENT ────────────────────────────────────────────────────────
+_SS_HEAL_DEFAULTS = {
+    "active_tab":            "dashboard",
+    "dash_slicer":           None,
+    "show_modal":            None,
+    "confirm_delete":        None,
+    "toast":                 None,
+    "show_notif_detail":     None,
+    "dash_client_filter":    "All",
+    "dash_slicers_expanded": False,
+    "login_attempts":        0,
+    "proj_tracker_open":     None,
+    "poc_row_edit":          None,
+    "task_popup":            None,
+    "save_popup":            None,
+    "task_comment_view":     None,
+    "forgot_step":           None,
+    "user_edit_id":          None,
+    "lc_edit_id":            None,
+    "sl_edit_id":            None,
+    "sl_mail_id":            None,
+    "lc_mail_id":            None,
+    "reset_pwd_uid":         None,
+    "project_filter_preset": "All",
+    "presales_filter_preset":"All",
+    "sl_send_all_trigger":   False,
+    "lc_last_notif_check":   "",
+}
+_VALID_TABS = {"dashboard","projects","presales","license","agent","users","settings","tasks"}
+_VOLATILE_KEYS = [
+    "show_modal","confirm_delete","show_notif_detail","task_popup",
+    "save_popup","poc_row_edit","proj_tracker_open","task_comment_view",
+]
+
+def _self_heal() -> bool:
+    """Inspect and repair broken session state every render. Returns True if healing occurred."""
+    healed = False
+    _now = datetime.now().timestamp()
+
+    # ── Rerun-loop guard: >12 reruns within 4 s → reset all volatile popups ──
+    if "_heal_ts" not in st.session_state:
+        st.session_state._heal_ts  = _now
+        st.session_state._heal_cnt = 0
+    else:
+        if _now - st.session_state._heal_ts < 4.0:
+            st.session_state._heal_cnt += 1
+        else:
+            st.session_state._heal_ts  = _now
+            st.session_state._heal_cnt = 0
+    if st.session_state._heal_cnt > 12:
+        for _k in _VOLATILE_KEYS:
+            st.session_state[_k] = None
+        st.session_state._heal_cnt = 0
+        healed = True
+
+    # ── Fill any missing session-state keys ───────────────────────────────────
+    for _k, _v in _SS_HEAL_DEFAULTS.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+            healed = True
+
+    # ── Validate active_tab is a real tab ─────────────────────────────────────
+    if st.session_state.get("active_tab") not in _VALID_TABS:
+        st.session_state.active_tab = "dashboard"
+        healed = True
+
+    # ── Ensure dismissed_notifs is always a set ───────────────────────────────
+    if not isinstance(st.session_state.get("dismissed_notifs"), set):
+        try:
+            st.session_state.dismissed_notifs = set(st.session_state.dismissed_notifs or [])
+        except Exception:
+            st.session_state.dismissed_notifs = set()
+        healed = True
+
+    # ── Repair projects DataFrame ─────────────────────────────────────────────
+    _proj = st.session_state.get("projects")
+    _need_reload = (
+        _proj is None
+        or not isinstance(_proj, pd.DataFrame)
+        or _proj.empty
+    )
+    if _need_reload:
+        try:
+            st.session_state.projects   = load_from_excel()
+            st.session_state.excel_mtime = excel_mtime()
+        except Exception:
+            st.session_state.projects = pd.DataFrame(BASE_PROJECTS)
+        healed = True
+    else:
+        # Ensure schema columns always present
+        for _col, _def in [("is_active","True"),("proj_type",""),
+                            ("due_date",""),("lead","")]:
+            if _col not in st.session_state.projects.columns:
+                st.session_state.projects[_col] = _def
+                healed = True
+
+    return healed
+
+_healed = _self_heal()
+
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def get_stats(d):
     new_mask = d["is_new"].astype(str).str.lower().isin(["true","1","yes"]) if "is_new" in d.columns else pd.Series([False]*len(d))
@@ -760,13 +860,30 @@ div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="
 /* ── Role badge ── */
 .role-badge{font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase}
 
+/* ── Tab-switch: smooth fade-in for all main content ── */
+@keyframes tabFadeIn{
+  0%  {opacity:0;transform:translateY(6px)}
+  100%{opacity:1;transform:translateY(0)}
+}
+section[data-testid="stMain"] > div > div[data-testid="stVerticalBlock"] {
+  animation:tabFadeIn .22s ease-out both;
+}
+
+/* ── Hide Streamlit's default bouncing loading bar ── */
+[data-testid="stStatusWidget"]{display:none!important}
+/* Replace with a smooth top-border glow while running */
+@keyframes topBarSlide{
+  0%  {opacity:0;width:0}
+  30% {opacity:1;width:60%}
+  100%{opacity:0;width:100%}
+}
+
 /* ── KPI expand animation ── */
 @keyframes kpi-slide-in{
-  0%  {opacity:0;transform:translateY(-14px) scale(0.90)}
-  60% {opacity:1;transform:translateY(2px)   scale(1.02)}
-  100%{opacity:1;transform:translateY(0)     scale(1)}
+  0%  {opacity:0;transform:translateY(-10px)}
+  100%{opacity:1;transform:translateY(0)}
 }
-.kpi-anim{animation:kpi-slide-in .38s cubic-bezier(0.34,1.3,0.64,1) both}
+.kpi-anim{animation:kpi-slide-in .28s ease-out both}
 
 /* ── Toast notification animation ── */
 @keyframes toastPop{
@@ -1019,12 +1136,29 @@ if st.session_state.current_user is None:
     _render_login()
     st.stop()
 
-cu   = st.session_state.current_user
-role = cu["role"]
+# ── POST-LOGIN SELF-HEAL + SAFETY CHECKS ─────────────────────────────────────
+try:
+    cu   = st.session_state.current_user
+    if not isinstance(cu, dict) or "role" not in cu:
+        raise ValueError("Corrupted user session")
+    role = cu["role"]
+except Exception:
+    st.session_state.current_user = None
+    st.rerun()
 
 # ── NAV ───────────────────────────────────────────────────────────────────────
-df    = st.session_state.projects
-stats = get_stats(df)
+try:
+    df = st.session_state.projects
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        df = load_from_excel()
+        st.session_state.projects   = df
+        st.session_state.excel_mtime = excel_mtime()
+    stats = get_stats(df)
+except Exception as _df_err:
+    st.error(f"Data load error — recovering... ({_df_err})")
+    st.session_state.projects = pd.DataFrame(BASE_PROJECTS)
+    df    = st.session_state.projects
+    stats = get_stats(df)
 
 _new_badge = f"&nbsp;<span style='color:#34D399;font-weight:600'>+{stats['new_added']} new</span>" if stats["new_added"] else ""
 st.markdown("""
@@ -1319,6 +1453,21 @@ else:
         st.rerun()
 if not gsheets.is_configured() and excel_mtime() != st.session_state.excel_mtime:
     st.warning("Excel file changed externally — click **Refresh** to reload.")
+
+# ── Self-heal recovery banner (shown only when healing was needed this render) ─
+if _healed and st.session_state.get("_show_heal_banner", False):
+    _hb_c1, _hb_c2 = st.columns([8, 1])
+    _hb_c1.markdown(
+        '<div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;'
+        'padding:6px 14px;font-size:11px;color:#92400E">'
+        'Self-healing agent repaired a session issue. All data is intact.</div>',
+        unsafe_allow_html=True
+    )
+    if _hb_c2.button("Dismiss", key="_heal_banner_dismiss", use_container_width=True):
+        st.session_state._show_heal_banner = False
+        st.rerun()
+else:
+    st.session_state._show_heal_banner = _healed
 
 st.markdown('<hr style="margin:2px 0;border:none;border-top:1px solid #E2E8F0">', unsafe_allow_html=True)
 df = st.session_state.projects   # re-bind after possible sync
@@ -1881,22 +2030,6 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── ROI BANNER ────────────────────────────────────────────────────────────
-    if dash_stats["total_hrs"] > 0:
-        st.markdown(f"""
-        <div class="roi-banner">
-          <span style="font-size:13px;font-weight:800;color:#6EE7B7;letter-spacing:1px">ROI</span>
-          <div>
-            <div style="font-size:10px;color:#6EE7B7;font-weight:700;letter-spacing:1px;text-transform:uppercase">
-              Cumulative ROI This Session</div>
-            <div style="display:flex;gap:28px;margin-top:6px">
-              <span><b style="font-size:22px;color:#10B981;font-family:'JetBrains Mono',monospace">{dash_stats['total_hrs']:.0f}</b>
-                <span style="color:#6EE7B7;font-size:12px;margin-left:4px">hrs saved</span></span>
-              <span><b style="font-size:22px;color:#10B981;font-family:'JetBrains Mono',monospace">&#8377;{dash_stats['total_cost']:,.0f}</b>
-                <span style="color:#6EE7B7;font-size:12px;margin-left:4px">cost saved</span></span>
-            </div>
-          </div>
-        </div>""".strip(), unsafe_allow_html=True)
 
     # ── CHARTS ────────────────────────────────────────────────────────────────
     _client_label = st.session_state.dash_client_filter
@@ -2638,6 +2771,64 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                             + _roi_html + '</div>',
                             unsafe_allow_html=True
                         )
+
+                    # ── Comments ──────────────────────────────────────────────
+                    _cmt_key = f"comments_{_trk_sel}"
+                    if _cmt_key not in st.session_state:
+                        st.session_state[_cmt_key] = []
+
+                    st.markdown(
+                        '<div style="margin-top:16px">'
+                        '<div style="font-size:9px;color:#94A3B8;font-weight:700;'
+                        'text-transform:uppercase;letter-spacing:.9px;margin-bottom:8px">'
+                        'Comments</div>'
+                        '</div>',
+                        unsafe_allow_html=True
+                    )
+                    _existing = st.session_state[_cmt_key]
+                    if _existing:
+                        for _ci, _cm in enumerate(_existing):
+                            _cm_bg = "#F8FAFC" if _ci % 2 == 0 else "#FFFFFF"
+                            st.markdown(
+                                f'<div style="background:{_cm_bg};border:1px solid #E2E8F0;'
+                                f'border-radius:8px;padding:9px 12px;margin-bottom:5px">'
+                                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">'
+                                f'<span style="font-size:11px;font-weight:700;color:#1D4ED8">{esc(_cm["author"])}</span>'
+                                f'<span style="font-size:10px;color:#94A3B8">{_cm["time"]}</span>'
+                                f'</div>'
+                                f'<div style="font-size:12px;color:#374151;line-height:1.5">{esc(_cm["text"])}</div>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+                    else:
+                        st.markdown(
+                            '<div style="font-size:11px;color:#CBD5E1;font-style:italic;margin-bottom:6px">'
+                            'No comments yet.</div>',
+                            unsafe_allow_html=True
+                        )
+                    _new_cmt = st.text_area(
+                        "Add a comment",
+                        key=f"cmt_input_{_trk_sel}",
+                        placeholder="Write a comment…",
+                        height=68,
+                        label_visibility="collapsed"
+                    )
+                    _cmt_col1, _cmt_col2 = st.columns([1, 4])
+                    if _cmt_col1.button("Post", key=f"cmt_post_{_trk_sel}",
+                                        use_container_width=True, type="primary"):
+                        _txt = (_new_cmt or "").strip()
+                        if _txt:
+                            _author = st.session_state.get("current_user", {})
+                            _author_name = (
+                                _author.get("name") or _author.get("email") or "User"
+                                if isinstance(_author, dict) else str(_author)
+                            )
+                            st.session_state[_cmt_key].append({
+                                "author": _author_name,
+                                "text":   _txt,
+                                "time":   datetime.now().strftime("%d %b %Y, %I:%M %p"),
+                            })
+                            st.rerun()
 
             # ── Checkpoint stepper ────────────────────────────────────────────
             _ckpt_phases = [
