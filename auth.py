@@ -894,6 +894,268 @@ def get_week_start(dt=None) -> str:
     return (d - timedelta(days=d.weekday())).isoformat()
 
 
+# ── CRM TABLES ─────────────────────────────────────────────────────────────────
+
+CRM_LEAD_STATUSES  = ["New", "Contacted", "Qualified", "Proposal", "Negotiation", "Won", "Lost"]
+CRM_LEAD_SOURCES   = ["Direct", "Referral", "Website", "LinkedIn", "Email Campaign", "Cold Call", "Other"]
+CRM_OPP_STAGES     = ["Prospecting", "Qualification", "Proposal", "Negotiation", "Closed Won", "Closed Lost"]
+CRM_ACTIVITY_TYPES = ["Call", "Email", "Meeting", "Demo", "Follow-up", "Other"]
+
+
+def _ensure_crm_tables():
+    conn = get_conn()
+    c = conn.cursor()
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS crm_leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_name TEXT NOT NULL,
+            contact_name TEXT DEFAULT '',
+            email TEXT DEFAULT '',
+            phone TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'New',
+            notes TEXT DEFAULT '',
+            assigned_to_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (assigned_to_id) REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS crm_opportunities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER,
+            title TEXT NOT NULL,
+            value REAL DEFAULT 0,
+            stage TEXT NOT NULL DEFAULT 'Prospecting',
+            probability INTEGER DEFAULT 0,
+            expected_close TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            assigned_to_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (lead_id) REFERENCES crm_leads(id),
+            FOREIGN KEY (assigned_to_id) REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS crm_activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER,
+            opportunity_id INTEGER,
+            type TEXT DEFAULT 'Call',
+            subject TEXT NOT NULL,
+            notes TEXT DEFAULT '',
+            activity_date TEXT DEFAULT '',
+            is_done INTEGER DEFAULT 0,
+            created_by_id INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (lead_id) REFERENCES crm_leads(id),
+            FOREIGN KEY (opportunity_id) REFERENCES crm_opportunities(id),
+            FOREIGN KEY (created_by_id) REFERENCES users(id)
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+
+# ── CRM LEAD CRUD ──────────────────────────────────────────────────────────────
+
+def create_lead(company_name: str, contact_name: str, email: str, phone: str,
+                source: str, status: str, notes: str, assigned_to_id=None) -> int:
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    now = _now()
+    c.execute(
+        "INSERT INTO crm_leads (company_name, contact_name, email, phone, source, status, notes, assigned_to_id, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (company_name.strip(), contact_name.strip(), email.strip().lower(), phone.strip(),
+         source, status, notes.strip(), assigned_to_id, now, now),
+    )
+    conn.commit()
+    lid = c.lastrowid
+    conn.close()
+    return lid
+
+
+def get_all_leads() -> list:
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT l.id, l.company_name, l.contact_name, l.email, l.phone,
+               l.source, l.status, l.notes, l.assigned_to_id,
+               u.name, l.created_at, l.updated_at
+        FROM crm_leads l
+        LEFT JOIN users u ON l.assigned_to_id = u.id
+        ORDER BY l.id DESC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "company_name": r[1], "contact_name": r[2], "email": r[3],
+         "phone": r[4], "source": r[5], "status": r[6], "notes": r[7],
+         "assigned_to_id": r[8], "assigned_to": r[9] or "",
+         "created_at": r[10], "updated_at": r[11]}
+        for r in rows
+    ]
+
+
+def update_lead(lead_id: int, company_name: str, contact_name: str, email: str,
+                phone: str, source: str, status: str, notes: str, assigned_to_id=None):
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE crm_leads SET company_name=?, contact_name=?, email=?, phone=?, "
+        "source=?, status=?, notes=?, assigned_to_id=?, updated_at=? WHERE id=?",
+        (company_name.strip(), contact_name.strip(), email.strip().lower(), phone.strip(),
+         source, status, notes.strip(), assigned_to_id, _now(), lead_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_lead(lead_id: int):
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM crm_activities WHERE lead_id=?", (lead_id,))
+    c.execute("DELETE FROM crm_opportunities WHERE lead_id=?", (lead_id,))
+    c.execute("DELETE FROM crm_leads WHERE id=?", (lead_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── CRM OPPORTUNITY CRUD ───────────────────────────────────────────────────────
+
+def create_opportunity(lead_id, title: str, value: float, stage: str,
+                       probability: int, expected_close: str, notes: str,
+                       assigned_to_id=None) -> int:
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    now = _now()
+    c.execute(
+        "INSERT INTO crm_opportunities (lead_id, title, value, stage, probability, expected_close, notes, assigned_to_id, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (lead_id, title.strip(), value, stage, probability, expected_close, notes.strip(), assigned_to_id, now, now),
+    )
+    conn.commit()
+    oid = c.lastrowid
+    conn.close()
+    return oid
+
+
+def get_all_opportunities() -> list:
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT o.id, o.lead_id, l.company_name, o.title, o.value, o.stage,
+               o.probability, o.expected_close, o.notes, o.assigned_to_id,
+               u.name, o.created_at, o.updated_at
+        FROM crm_opportunities o
+        LEFT JOIN crm_leads l ON o.lead_id = l.id
+        LEFT JOIN users u ON o.assigned_to_id = u.id
+        ORDER BY o.id DESC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "lead_id": r[1], "company_name": r[2] or "", "title": r[3],
+         "value": r[4] or 0, "stage": r[5], "probability": r[6] or 0,
+         "expected_close": r[7] or "", "notes": r[8] or "",
+         "assigned_to_id": r[9], "assigned_to": r[10] or "",
+         "created_at": r[11], "updated_at": r[12]}
+        for r in rows
+    ]
+
+
+def update_opportunity(opp_id: int, lead_id, title: str, value: float, stage: str,
+                       probability: int, expected_close: str, notes: str, assigned_to_id=None):
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE crm_opportunities SET lead_id=?, title=?, value=?, stage=?, probability=?, "
+        "expected_close=?, notes=?, assigned_to_id=?, updated_at=? WHERE id=?",
+        (lead_id, title.strip(), value, stage, probability, expected_close,
+         notes.strip(), assigned_to_id, _now(), opp_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_opportunity(opp_id: int):
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM crm_activities WHERE opportunity_id=?", (opp_id,))
+    c.execute("DELETE FROM crm_opportunities WHERE id=?", (opp_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── CRM ACTIVITY CRUD ──────────────────────────────────────────────────────────
+
+def create_activity(lead_id, opportunity_id, act_type: str, subject: str,
+                    notes: str, activity_date: str, created_by_id=None) -> int:
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO crm_activities (lead_id, opportunity_id, type, subject, notes, activity_date, is_done, created_by_id, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (lead_id, opportunity_id, act_type, subject.strip(), notes.strip(),
+         activity_date, 0, created_by_id, _now()),
+    )
+    conn.commit()
+    aid = c.lastrowid
+    conn.close()
+    return aid
+
+
+def get_all_activities() -> list:
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT a.id, a.lead_id, l.company_name, a.opportunity_id, o.title,
+               a.type, a.subject, a.notes, a.activity_date, a.is_done,
+               a.created_by_id, u.name, a.created_at
+        FROM crm_activities a
+        LEFT JOIN crm_leads l ON a.lead_id = l.id
+        LEFT JOIN crm_opportunities o ON a.opportunity_id = o.id
+        LEFT JOIN users u ON a.created_by_id = u.id
+        ORDER BY a.activity_date DESC, a.id DESC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "lead_id": r[1], "company_name": r[2] or "", "opportunity_id": r[3],
+         "opportunity_title": r[4] or "", "type": r[5], "subject": r[6],
+         "notes": r[7] or "", "activity_date": r[8] or "", "is_done": bool(r[9]),
+         "created_by_id": r[10], "created_by": r[11] or "", "created_at": r[12]}
+        for r in rows
+    ]
+
+
+def update_activity_done(activity_id: int, is_done: bool):
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE crm_activities SET is_done=? WHERE id=?", (1 if is_done else 0, activity_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_activity(activity_id: int):
+    _ensure_crm_tables()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM crm_activities WHERE id=?", (activity_id,))
+    conn.commit()
+    conn.close()
+
+
 # ── TASK COMMENT CRUD ──────────────────────────────────────────────────────────
 
 def add_task_comment(task_id: int, user_id: int, comment: str, week_start: str) -> bool:

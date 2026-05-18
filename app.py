@@ -24,6 +24,8 @@ st.set_page_config(
 if "db_initialized" not in st.session_state:
     auth.init_db()
     st.session_state.db_initialized = True
+    import api_server as _api
+    _api.start_background(port=8502)
 
 if hasattr(email_utils, "start_license_notification_scheduler"):
     email_utils.start_license_notification_scheduler()
@@ -31,6 +33,64 @@ if hasattr(email_utils, "start_license_notification_scheduler"):
 # ── EXCEL PATH ────────────────────────────────────────────────────────────────
 EXCEL_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects.xlsx")
 USERS_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.xlsx")
+
+# ── ONEDRIVE FILE STORAGE ─────────────────────────────────────────────────────
+def _get_onedrive_base_path() -> str:
+    """Return path to 'Qualesce Dashboard' inside the OneDrive folder that
+    matches the Outlook email configured in admin settings. Falls back to
+    the default 'OneDrive - Qualesce' if no match is found.
+    Result is cached in session state for the lifetime of the session."""
+    cached = st.session_state.get("_od_base_path_cache")
+    if cached:
+        return cached
+    home = os.path.expanduser("~")
+    result = os.path.join(home, "OneDrive - Qualesce", "Qualesce Dashboard")
+    try:
+        cfg = auth.get_email_settings()
+        email = cfg.get("outlook_email", "")
+        if email and "@" in email:
+            domain = email.split("@")[1].lower()
+            org_key = domain.split(".")[0]
+            candidate = os.path.join(home, f"OneDrive - {org_key.capitalize()}")
+            if os.path.isdir(candidate):
+                result = os.path.join(candidate, "Qualesce Dashboard")
+            else:
+                for entry in os.listdir(home):
+                    if entry.lower().startswith("onedrive") and org_key in entry.lower():
+                        full = os.path.join(home, entry)
+                        if os.path.isdir(full):
+                            result = os.path.join(full, "Qualesce Dashboard")
+                            break
+    except Exception:
+        pass
+    st.session_state["_od_base_path_cache"] = result
+    return result
+
+
+def _get_file_counts_cached() -> dict:
+    """Scan the OneDrive Qualesce Dashboard folder once per session.
+    Returns {safe_folder_name: file_count} for all project folders.
+    Much faster than calling get_project_files() per row (1 scan vs N)."""
+    cache_key = "_file_counts_cache"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+    base = _get_onedrive_base_path()
+    counts: dict = {}
+    if os.path.isdir(base):
+        for entry in os.listdir(base):
+            fp = os.path.join(base, entry)
+            if os.path.isdir(fp):
+                try:
+                    counts[entry] = sum(
+                        1 for f in os.listdir(fp)
+                        if os.path.isfile(os.path.join(fp, f))
+                    )
+                except OSError:
+                    counts[entry] = 0
+    st.session_state[cache_key] = counts
+    return counts
+
+
 EXCEL_COLS = ["id","name","client","lead","employee","status","proj_type","start","end","due_date","po","desc",
               "manual_hrs","auto_hrs","cost_per_hr","hours_saved","cost_saved","roi_pct","is_new","is_active",
               "ckpt_pdd_sdd_start","ckpt_pdd_sdd_end",
@@ -104,18 +164,18 @@ BASE_PROJECTS = [
 
 ALL_STATUSES  = ["R&M","UAT","In Progress","Completed","PDD","Discontinued","Internal POC","External POC","Important","Presales"]
 STATUS_STYLES = {
-    "R&M":          {"bg":"#EFF6FF","text":"#1D4ED8","dot":"#3B82F6"},
-    "UAT":          {"bg":"#FFFBEB","text":"#92400E","dot":"#F59E0B"},
-    "Completed":    {"bg":"#ECFDF5","text":"#065F46","dot":"#10B981"},
-    "In Progress":  {"bg":"#ECFEFF","text":"#155E75","dot":"#06B6D4"},
-    "PDD":          {"bg":"#FFF7ED","text":"#9A3412","dot":"#F97316"},
-    "Discontinued": {"bg":"#FEF2F2","text":"#991B1B","dot":"#EF4444"},
-    "Internal POC": {"bg":"#F5F3FF","text":"#5B21B6","dot":"#8B5CF6"},
-    "External POC": {"bg":"#FDF2F8","text":"#9D174D","dot":"#EC4899"},
-    "Important":    {"bg":"#FFF1F2","text":"#BE123C","dot":"#F43F5E"},
-    "Presales":     {"bg":"#F0F9FF","text":"#0369A1","dot":"#0EA5E9"},
+    "R&M":          {"bg":"#EFF7F7","text":"#3F8E91","dot":"#5FA9AB"},
+    "UAT":          {"bg":"#FBF6E7","text":"#966D17","dot":"#D4A02C"},
+    "Completed":    {"bg":"#E5F2EC","text":"#2E7D5B","dot":"#2E7D5B"},
+    "In Progress":  {"bg":"#EFF7F7","text":"#2F6F72","dot":"#5FA9AB"},
+    "PDD":          {"bg":"#FBF6E7","text":"#966D17","dot":"#D4A02C"},
+    "Discontinued": {"bg":"#FCEAEA","text":"#B23A3A","dot":"#B23A3A"},
+    "Internal POC": {"bg":"#EFF7F7","text":"#2F6F72","dot":"#4A989B"},
+    "External POC": {"bg":"#F7F8F9","text":"#4E5860","dot":"#9BA5AE"},
+    "Important":    {"bg":"#FCEAEA","text":"#B23A3A","dot":"#B23A3A"},
+    "Presales":     {"bg":"#EFF7F7","text":"#3F8E91","dot":"#5FA9AB"},
 }
-STATUS_CHART_COLORS = ["#3B82F6","#F59E0B","#06B6D4","#10B981","#F97316","#EF4444","#8B5CF6","#EC4899","#F43F5E","#0EA5E9"]
+STATUS_CHART_COLORS = ["#5FA9AB","#D4A02C","#4A989B","#2E7D5B","#B8881F","#B23A3A","#3F8E91","#6E7A84","#966D17","#8FC4C5"]
 
 SYSTEM_PROMPT = """You are an AI Project Manager Agent for Qualesce (RPA automation company).
 BASE PORTFOLIO: 46 projects across Raychem(1), Swagekklok-CA(5), Swagelok-AL(7), TEPL(19), Internal POC(13), External POC(1).
@@ -168,6 +228,117 @@ def build_excel_bytes(df: pd.DataFrame) -> bytes:
         task_df.drop(columns=["comment"], errors="ignore").to_excel(writer, sheet_name="Tasks", index=False)
         comment_df.to_excel(writer, sheet_name="Comments", index=False)
     return buf.getvalue()
+
+
+# ── ONEDRIVE FILE HELPERS ─────────────────────────────────────────────────────
+def _safe_folder(name: str) -> str:
+    import re as _re
+    return _re.sub(r'[<>:"/\\|?*]', '_', str(name)).strip() or "Unknown_Project"
+
+def _project_dir(pname: str) -> str:
+    d = os.path.join(_get_onedrive_base_path(), _safe_folder(pname))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def get_project_files(pname: str) -> list:
+    d = os.path.join(_get_onedrive_base_path(), _safe_folder(pname))
+    if not os.path.isdir(d):
+        return []
+    files = []
+    for f in sorted(os.listdir(d)):
+        fp = os.path.join(d, f)
+        if os.path.isfile(fp):
+            files.append({"name": f, "path": fp, "size": os.path.getsize(fp)})
+    return files
+
+def save_project_file(pname: str, uploaded_file) -> str:
+    import re as _re
+    safe = _re.sub(r'[^\w\s\-.]', '_', os.path.basename(uploaded_file.name))
+    dest = os.path.join(_project_dir(pname), safe)
+    with open(dest, "wb") as out:
+        out.write(uploaded_file.getbuffer())
+    return safe
+
+def delete_project_file(pname: str, filename: str) -> bool:
+    fp = os.path.join(_get_onedrive_base_path(), _safe_folder(pname), os.path.basename(filename))
+    if os.path.isfile(fp):
+        os.remove(fp)
+        return True
+    return False
+
+def fmt_file_size(b: int) -> str:
+    if b < 1024: return f"{b} B"
+    if b < 1024**2: return f"{b/1024:.1f} KB"
+    return f"{b/1024**2:.1f} MB"
+
+
+@st.dialog("📎 Project Files", width="large")
+def _file_upload_dialog():
+    pname     = st.session_state.get("file_panel_name", "")
+    panel_pid = st.session_state.get("file_panel_proj", "")
+    if not pname:
+        st.error("No project selected.")
+        return
+
+    _od_email = auth.get_email_settings().get("outlook_email", "") or "qualesce account"
+    _od_path  = _get_onedrive_base_path()
+    _od_label = os.path.basename(os.path.dirname(_od_path))   # e.g. "OneDrive - Qualesce"
+    st.markdown(
+        f"<div style='font-size:12px;color:#64748B;margin-bottom:4px'>"
+        f"📁 {_od_label} ({_od_email}) / Qualesce Dashboard / <b>{pname}</b></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Existing files list ───────────────────────────────────────────────────
+    existing = get_project_files(pname)
+    if existing:
+        st.markdown("**Uploaded Files**")
+        for fi in existing:
+            c1, c2, c3, c4 = st.columns([5, 2, 2, 1])
+            c1.markdown(f"📄 {fi['name']}")
+            c2.caption(fmt_file_size(fi["size"]))
+            with open(fi["path"], "rb") as fh:
+                c3.download_button(
+                    "⬇ Download", fh.read(),
+                    file_name=fi["name"],
+                    key=f"dlg_dl_{panel_pid}_{fi['name']}",
+                )
+            if c4.button("🗑", key=f"dlg_del_{panel_pid}_{fi['name']}", help="Delete"):
+                delete_project_file(pname, fi["name"])
+                st.session_state.pop("_file_counts_cache", None)
+                st.rerun()
+        st.divider()
+
+    # ── Upload area ───────────────────────────────────────────────────────────
+    uploaded = st.file_uploader(
+        "Drag & drop files here, or click to browse",
+        accept_multiple_files=True,
+        key=f"dlg_up_{panel_pid}",
+    )
+
+    if uploaded:
+        st.markdown(f"**{len(uploaded)} file(s) ready to upload:**")
+        for uf in uploaded:
+            st.caption(f"• {uf.name}  ({fmt_file_size(uf.size)})")
+        st.markdown("")
+        c_save, c_close = st.columns(2)
+        if c_save.button("💾 Save to OneDrive", type="primary", use_container_width=True, key="dlg_save"):
+            for uf in uploaded:
+                save_project_file(pname, uf)
+            st.session_state.file_panel_proj = None
+            st.session_state.file_panel_name = ""
+            st.session_state.pop("_file_counts_cache", None)  # invalidate badge cache
+            st.success(f"✅ {len(uploaded)} file(s) saved to OneDrive!")
+            st.rerun()
+        if c_close.button("Cancel", use_container_width=True, key="dlg_cancel"):
+            st.session_state.file_panel_proj = None
+            st.session_state.file_panel_name = ""
+            st.rerun()
+    else:
+        if st.button("Close", use_container_width=True, key="dlg_close"):
+            st.session_state.file_panel_proj = None
+            st.session_state.file_panel_name = ""
+            st.rerun()
 
 
 def save_to_excel(df: pd.DataFrame) -> bool:
@@ -238,7 +409,7 @@ def save_to_excel(df: pd.DataFrame) -> bool:
 
 
 def save_to_excel_async(df: pd.DataFrame):
-    """Non-blocking Excel save with retry — retries up to 3× if the file is locked."""
+    """Non-blocking Excel save with retry — retries up to 3Ã— if the file is locked."""
     import time
     _df_copy = df.copy()
     def _write():
@@ -510,6 +681,8 @@ if "active_tab"           not in st.session_state: st.session_state.active_tab  
 if "dash_slicer"          not in st.session_state: st.session_state.dash_slicer          = None
 if "show_modal"           not in st.session_state: st.session_state.show_modal           = None
 if "confirm_delete"       not in st.session_state: st.session_state.confirm_delete       = None
+if "file_panel_proj"      not in st.session_state: st.session_state.file_panel_proj      = None
+if "file_panel_name"      not in st.session_state: st.session_state.file_panel_name      = ""
 if "toast"                not in st.session_state: st.session_state.toast                = None
 if "dismissed_notifs"     not in st.session_state: st.session_state.dismissed_notifs     = set()
 if "show_notif_detail"    not in st.session_state: st.session_state.show_notif_detail    = None
@@ -721,10 +894,12 @@ LIVE DATABASE (source: projects.xlsx + qualesce.db):
 # ── STYLES ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
 html,body,[class*="css"]{
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif!important;
-  background:#F1F5F9!important;
-  color:#1E293B!important;
+  font-family:'Inter','Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif!important;
+  background:#F7F8F9!important;
+  color:#1F3B4D!important;
   -webkit-font-smoothing:antialiased!important;
   -moz-osx-font-smoothing:grayscale!important;
   text-rendering:optimizeLegibility!important;
@@ -735,22 +910,22 @@ section[data-testid="stSidebar"]{display:none!important}
 
 /* ── KPI Cards ── */
 .kpi-wrap{
-  text-align:center;padding:18px 12px;border-radius:12px;background:#FFFFFF;
-  border:1px solid #E2E8F0;
-  box-shadow:0 2px 8px rgba(15,23,42,.07);
-  cursor:pointer}
-.kpi-wrap:hover{box-shadow:0 6px 20px rgba(15,23,42,.12)}
-.kpi-num{font-family:'Courier New',Courier,monospace;font-size:28px;font-weight:700;margin:8px 0 4px;letter-spacing:-1px}
-.kpi-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94A3B8}
+  text-align:center;padding:18px 12px;border-radius:8px;background:#FFFFFF;
+  border:1px solid #DFE3E7;
+  box-shadow:0 1px 2px rgba(15,30,42,.06),0 1px 1px rgba(15,30,42,.04);
+  cursor:pointer;transition:box-shadow 120ms cubic-bezier(0.22,1,0.36,1)}
+.kpi-wrap:hover{box-shadow:0 4px 10px rgba(15,30,42,.08),0 2px 4px rgba(15,30,42,.04)}
+.kpi-num{font-family:'JetBrains Mono','Courier New',monospace;font-size:28px;font-weight:700;margin:8px 0 4px;letter-spacing:-1px;color:#1F3B4D}
+.kpi-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#9BA5AE}
 
 /* ── Generic content card ── */
 .q-card{
-  background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;
-  padding:18px 20px;box-shadow:0 2px 8px rgba(15,23,42,.07)}
+  background:#FFFFFF;border:1px solid #DFE3E7;border-radius:8px;
+  padding:18px 20px;box-shadow:0 1px 2px rgba(15,30,42,.06)}
 
 /* ── Top Navigation ── */
 .q-nav{
-  background:#0F172A;
+  background:#162C3B;
   padding:0 28px;
   display:flex;align-items:center;justify-content:space-between;
   height:62px;position:sticky;top:0;z-index:100;
@@ -760,15 +935,22 @@ section[data-testid="stSidebar"]{display:none!important}
 
 /* ── Slicer rows ── */
 .srow{
-  padding:12px 16px;border-bottom:1px solid #F1F5F9;
-  display:flex;justify-content:space-between;align-items:start}
+  padding:11px 18px;border-bottom:1px solid #F1F5F9;
+  display:flex;justify-content:space-between;align-items:center;
+  transition:background .12s}
 .srow:nth-child(even){background:#F8FAFC}
-.srow:hover{background:#EFF6FF}
+.srow:hover{background:#EFF7F7}
 
 /* ── Project table rows ── */
-.prow{padding:10px;border-bottom:1px solid #F1F5F9;background:#fff}
+.prow{padding:9px 8px;border-bottom:1px solid #F1F5F9;background:#fff;transition:background .12s}
 .prow:nth-child(even){background:#F8FAFC}
-.prow:hover{background:#EFF6FF}
+.prow:hover{background:#EFF7F7}
+
+/* ── Table section header label ── */
+.q-tbl-hdr{padding:11px 16px 8px;background:#F8FAFC;border-bottom:2px solid #DFE3E7;
+  font-size:11px;font-weight:700;color:#1F3B4D;letter-spacing:-.1px;display:flex;
+  align-items:center;justify-content:space-between}
+.q-tbl-count{font-size:11px;color:#64748B;font-weight:500}
 
 /* ── Chat bubbles ── */
 @keyframes slideInRight{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}
@@ -779,86 +961,99 @@ section[data-testid="stSidebar"]{display:none!important}
 .chat-avatar{
   width:30px;height:30px;border-radius:50%;display:flex;align-items:center;
   justify-content:center;font-size:14px;flex-shrink:0;font-weight:700}
-.avatar-user{background:#DBEAFE;color:#1D4ED8}
-.avatar-bot{background:#DCFCE7;color:#16A34A}
+.avatar-user{background:#D9ECEC;color:#3F8E91}
+.avatar-bot{background:#E5F2EC;color:#2E7D5B}
 .chat-user{
-  background:#EFF6FF;border:1px solid #BFDBFE;
+  background:#EFF7F7;border:1px solid #B6DADB;
   border-radius:16px 16px 4px 16px;padding:12px 16px;font-size:13px;line-height:1.6;
-  max-width:80%;animation:slideInRight .3s ease-out}
+  max-width:80%;animation:slideInRight .3s cubic-bezier(0.22,1,0.36,1)}
 .chat-bot{
-  background:#F0FDF4;border:1px solid #BBF7D0;
+  background:#E5F2EC;border:1px solid #A8D5BE;
   border-radius:16px 16px 16px 4px;padding:12px 16px;font-size:13px;line-height:1.6;
-  max-width:80%;animation:slideInLeft .3s ease-out}
+  max-width:80%;animation:slideInLeft .3s cubic-bezier(0.22,1,0.36,1)}
 .typing-indicator{
   display:flex;align-items:center;gap:10px;
-  background:#F0FDF4;border:1px solid #BBF7D0;
+  background:#E5F2EC;border:1px solid #A8D5BE;
   border-radius:16px 16px 16px 4px;padding:12px 16px;
-  width:fit-content;animation:slideInLeft .3s ease-out}
+  width:fit-content;animation:slideInLeft .3s cubic-bezier(0.22,1,0.36,1)}
 .typing-dots{display:flex;gap:4px;align-items:center}
 .typing-dots span{
-  width:7px;height:7px;border-radius:50%;background:#16A34A;display:inline-block}
+  width:7px;height:7px;border-radius:50%;background:#2E7D5B;display:inline-block}
 .typing-dots span:nth-child(1){animation:typingPulse 1.2s infinite ease-in-out}
 .typing-dots span:nth-child(2){animation:typingPulse 1.2s infinite ease-in-out .2s}
 .typing-dots span:nth-child(3){animation:typingPulse 1.2s infinite ease-in-out .4s}
 
 /* ── ROI Banner ── */
 .roi-banner{
-  background:linear-gradient(135deg,#0F2D52,#1E3A5F);
-  border:1px solid rgba(37,99,235,.35);
-  border-radius:12px;padding:18px 26px;
+  background:linear-gradient(135deg,#162C3B,#244E51);
+  border:1px solid rgba(95,169,171,.30);
+  border-radius:8px;padding:18px 26px;
   display:flex;gap:32px;align-items:center;margin-bottom:20px;
-  box-shadow:0 4px 16px rgba(15,23,42,.18)}
+  box-shadow:0 4px 10px rgba(15,30,42,.08)}
 
 /* ── Streamlit buttons ── */
 div[data-testid="stButton"] > button{
-  border-radius:8px!important;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif!important;
+  border-radius:6px!important;
+  font-family:'Inter','Segoe UI',sans-serif!important;
   font-weight:600!important;
   font-size:12px!important;
   letter-spacing:.2px!important}
 
 /* ── Notification popup ── */
 .notif-popup{
-  border-radius:12px;padding:20px 24px;margin-bottom:20px;
-  box-shadow:0 4px 24px rgba(15,23,42,.12);}
+  border-radius:8px;padding:20px 24px;margin-bottom:20px;
+  box-shadow:0 4px 10px rgba(15,30,42,.08);}
 .notif-alert{}
 
 /* ── Streamlit container borders ── */
 div[data-testid="stVerticalBlockBorderWrapper"]{
-  border-color:#E2E8F0!important;border-radius:12px!important}
+  border:1px solid #E2E8F0!important;border-radius:10px!important;
+  box-shadow:0 2px 8px rgba(15,30,42,.05)!important;
+  overflow:hidden!important}
+
+/* ── Keyframes for edit button animation ── */
+@keyframes editWiggle{
+  0%,100%{transform:rotate(0deg) scale(1)}
+  20%    {transform:rotate(-12deg) scale(1.15)}
+  40%    {transform:rotate(10deg) scale(1.12)}
+  60%    {transform:rotate(-7deg) scale(1.10)}
+  80%    {transform:rotate(5deg) scale(1.05)}}
 
 /* ── Table action icon buttons (✏ edit · 🗑 delete · 🔑 warn) ── */
 div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button{
-  background:#EFF6FF!important;border:1.5px solid #BFDBFE!important;
-  color:#1D4ED8!important;font-size:15px!important;
+  background:#EFF7F7!important;border:1.5px solid #B6DADB!important;
+  color:#3F8E91!important;font-size:15px!important;
   min-height:30px!important;padding:2px 8px!important;
-  transition:background .15s,border-color .15s!important}
+  border-radius:8px!important;
+  transition:background 150ms,border-color 150ms,box-shadow 150ms,transform 150ms!important}
 div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button:hover{
-  background:#DBEAFE!important;border-color:#93C5FD!important}
+  background:#D9ECEC!important;border-color:#3F8E91!important;
+  animation:editWiggle .45s ease forwards!important;
+  box-shadow:0 4px 14px rgba(63,142,145,.35)!important}
 div[data-testid="stMarkdownContainer"]:has(.act-del-marker) ~ div[data-testid="stButton"] > button{
-  background:#FFF1F2!important;border:1.5px solid #FECACA!important;
-  color:#DC2626!important;font-size:15px!important;
+  background:#FCEAEA!important;border:1.5px solid #F0BABA!important;
+  color:#B23A3A!important;font-size:15px!important;
   min-height:30px!important;padding:2px 8px!important;
-  transition:background .15s,border-color .15s!important}
+  transition:background 120ms,border-color 120ms!important}
 div[data-testid="stMarkdownContainer"]:has(.act-del-marker) ~ div[data-testid="stButton"] > button:hover{
-  background:#FEE2E2!important;border-color:#FCA5A5!important}
+  background:#F5CECE!important;border-color:#D98080!important}
 div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="stButton"] > button{
-  background:#FFFBEB!important;border:1.5px solid #FDE68A!important;
-  color:#92400E!important;font-size:15px!important;
+  background:#FBF6E7!important;border:1.5px solid #ECD58A!important;
+  color:#966D17!important;font-size:15px!important;
   min-height:30px!important;padding:2px 8px!important;
-  transition:background .15s,border-color .15s!important}
+  transition:background 120ms,border-color 120ms!important}
 div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="stButton"] > button:hover{
-  background:#FEF3C7!important;border-color:#FCD34D!important}
+  background:#F5E9C2!important;border-color:#D4A02C!important}
 
 /* ── Login ── */
-.login-hint{text-align:center;font-size:11px;color:#94A3B8;margin-top:12px}
+.login-hint{text-align:center;font-size:11px;color:#9BA5AE;margin-top:12px}
 
 /* ── Task progress bar ── */
-.progress-bar-outer{background:#E2E8F0;border-radius:99px;height:7px;overflow:hidden;margin:4px 0}
+.progress-bar-outer{background:#DFE3E7;border-radius:99px;height:7px;overflow:hidden;margin:4px 0}
 .progress-bar-inner{height:7px;border-radius:99px}
 
 /* ── Role badge ── */
-.role-badge{font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase}
+.role-badge{font-size:9px;font-weight:700;padding:2px 8px;border-radius:999px;text-transform:uppercase}
 
 /* ── Tab-switch: smooth fade-in for all main content ── */
 @keyframes tabFadeIn{
@@ -866,12 +1061,11 @@ div[data-testid="stMarkdownContainer"]:has(.act-warn-marker) ~ div[data-testid="
   100%{opacity:1;transform:translateY(0)}
 }
 section[data-testid="stMain"] > div > div[data-testid="stVerticalBlock"] {
-  animation:tabFadeIn .22s ease-out both;
+  animation:tabFadeIn .22s cubic-bezier(0.22,1,0.36,1) both;
 }
 
 /* ── Hide Streamlit's default bouncing loading bar ── */
 [data-testid="stStatusWidget"]{display:none!important}
-/* Replace with a smooth top-border glow while running */
 @keyframes topBarSlide{
   0%  {opacity:0;width:0}
   30% {opacity:1;width:60%}
@@ -883,7 +1077,7 @@ section[data-testid="stMain"] > div > div[data-testid="stVerticalBlock"] {
   0%  {opacity:0;transform:translateY(-10px)}
   100%{opacity:1;transform:translateY(0)}
 }
-.kpi-anim{animation:kpi-slide-in .28s ease-out both}
+.kpi-anim{animation:kpi-slide-in .28s cubic-bezier(0.22,1,0.36,1) both}
 
 /* ── Toast notification animation ── */
 @keyframes toastPop{
@@ -900,29 +1094,54 @@ div[data-testid="stMarkdownContainer"]:has(.act-del-marker) ~ div[data-testid="s
   margin-top:4px!important;
 }
 div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button{
-  background:#EFF6FF!important;border:1.5px solid #BFDBFE!important;
-  color:#1D4ED8!important;font-size:15px!important;
+  background:#EFF7F7!important;border:1.5px solid #B6DADB!important;
+  color:#3F8E91!important;font-size:15px!important;
   min-height:30px!important;padding:2px 8px!important;
-  transition:background .15s,border-color .15s!important}
+  transition:background 120ms,border-color 120ms!important}
 div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="stButton"] > button:hover{
-  background:#DBEAFE!important;border-color:#93C5FD!important}
+  background:#D9ECEC!important;border-color:#8FC4C5!important}
+
+/* ── Project table: collapse marker spans ── */
+div[data-testid="stMarkdownContainer"]:has(.proj-act-marker){
+  height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;
+  line-height:0!important;font-size:0!important}
+div[data-testid="stMarkdownContainer"]:has(.proj-act-marker) ~ div[data-testid="stButton"] > button{
+  min-height:30px!important;max-height:32px!important;
+  padding:2px 6px!important;font-size:14px!important;
+  transition:background 120ms,border-color 120ms!important}
+/* Edit button */
+div[data-testid="stMarkdownContainer"]:has(.proj-edit-marker) ~ div[data-testid="stButton"] > button{
+  background:#EFF7F7!important;border:1.5px solid #B6DADB!important;color:#3F8E91!important}
+div[data-testid="stMarkdownContainer"]:has(.proj-edit-marker) ~ div[data-testid="stButton"] > button:hover{
+  background:#D9ECEC!important;border-color:#8FC4C5!important}
+/* Delete button */
+div[data-testid="stMarkdownContainer"]:has(.proj-del-marker) ~ div[data-testid="stButton"] > button{
+  background:#FCEAEA!important;border:1.5px solid #F0BABA!important;color:#B23A3A!important}
+div[data-testid="stMarkdownContainer"]:has(.proj-del-marker) ~ div[data-testid="stButton"] > button:hover{
+  background:#F5CECE!important;border-color:#D98080!important}
+/* Files button */
+div[data-testid="stMarkdownContainer"]:has(.proj-files-marker) ~ div[data-testid="stButton"] > button{
+  background:#EFF7F7!important;border:1.5px solid #B6DADB!important;color:#3F8E91!important}
+div[data-testid="stMarkdownContainer"]:has(.proj-files-marker) ~ div[data-testid="stButton"] > button:hover{
+  background:#D9ECEC!important;border-color:#8FC4C5!important}
 
 /* ── Expand arrow button ── */
 .expand-btn button{
   border-radius:50%!important;
   width:38px!important;height:38px!important;
   padding:0!important;font-size:16px!important;
-  background:#F1F5F9!important;border:1px solid #CBD5E1!important;
-  color:#475569!important;font-weight:700!important}
-.expand-btn button:hover{background:#E2E8F0!important}
+  background:#EFF1F3!important;border:1px solid #C5CCD2!important;
+  color:#4E5860!important;font-weight:700!important}
+.expand-btn button:hover{background:#DFE3E7!important}
 
 /* ── HD table ── */
-.hd-table{width:100%;border-collapse:collapse;font-size:12px}
-.hd-table th{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#94A3B8;padding:6px 8px;border-bottom:2px solid #E2E8F0;white-space:nowrap}
-.hd-table td{padding:8px 8px;border-bottom:1px solid #F1F5F9;vertical-align:middle;color:#374151}
-.hd-table tr:hover td{background:#F0F4FF}
+.hd-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff}
+.hd-table th{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748B;padding:9px 10px;border-bottom:2px solid #DFE3E7;white-space:nowrap;background:#F8FAFC;text-align:left}
+.hd-table td{padding:10px 10px;border-bottom:1px solid #F1F5F9;vertical-align:middle;color:#1F3B4D;line-height:1.5}
+.hd-table tr:last-child td{border-bottom:none}
+.hd-table tr:hover td{background:#EFF7F7}
 .hd-table tr:nth-child(even) td{background:#F8FAFC}
-.hd-table tr:nth-child(even):hover td{background:#EFF6FF}
+.hd-table tr:nth-child(even):hover td{background:#EFF7F7}
 
 /* ── Task creation popup overlay ── */
 .task-popup-overlay{
@@ -937,8 +1156,8 @@ div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="
   animation:popBoxIn .42s cubic-bezier(.34,1.6,.64,1) forwards;}
 .task-popup-lbl{font-size:15px;font-weight:800;letter-spacing:-.3px}
 .task-popup-spinner{
-  width:60px;height:60px;border:5px solid #EFF6FF;
-  border-top-color:#3B82F6;border-right-color:#3B82F6;
+  width:60px;height:60px;border:5px solid #EFF7F7;
+  border-top-color:#5FA9AB;border-right-color:#5FA9AB;
   border-radius:50%;animation:popSpin .65s linear infinite;}
 .task-popup-svg{width:72px;height:72px;overflow:visible}
 .tp-circle{fill:none;stroke-width:4;stroke-dasharray:165;stroke-dashoffset:165;
@@ -965,6 +1184,7 @@ div[data-testid="stMarkdownContainer"]:has(.act-edit-marker) ~ div[data-testid="
   70%{opacity:1}
   100%{opacity:0}}
 .task-popup-auto{animation:popLifecycle 1.2s ease forwards!important;pointer-events:none!important;cursor:default!important}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -973,7 +1193,7 @@ _POPUP_LOADING = (
     '<div class="task-popup-overlay" id="tpop" style="cursor:default">'
     '<div class="task-popup-box">'
     '<div class="task-popup-spinner"></div>'
-    '<div class="task-popup-lbl" style="color:#3B82F6">Creating…</div>'
+    '<div class="task-popup-lbl" style="color:#5FA9AB">Creating…</div>'
     '</div></div>'
 )
 _POPUP_SUCCESS = (
@@ -1015,9 +1235,9 @@ def _render_login():
         with st.container(border=True):
             st.markdown("""
             <div style="text-align:center;padding:16px 0 20px">
-              <div style="font-size:36px;font-weight:900;color:#3B82F6;letter-spacing:-2px;margin-bottom:8px">Q</div>
-              <div style="font-size:20px;font-weight:800;color:#0F172A;letter-spacing:-.3px">QUALESCE</div>
-              <div style="font-size:12px;color:#64748B;margin-top:4px">AI Project Manager Platform</div>
+              <div style="font-size:36px;font-weight:900;color:#5FA9AB;letter-spacing:-2px;margin-bottom:8px">Q</div>
+              <div style="font-size:20px;font-weight:800;color:#1F3B4D;letter-spacing:-.3px;font-family:Manrope,sans-serif">QUALESCE</div>
+              <div style="font-size:12px;color:#6E7A84;margin-top:4px">AI Project Manager Platform</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -1172,12 +1392,12 @@ st.markdown("""
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) {
     position:fixed !important; top:0 !important; left:0 !important; right:0 !important;
     width:100vw !important; max-width:100vw !important;
-    background:#0F172A !important; padding:0 !important; margin:0 !important;
+    background:#162C3B !important; padding:0 !important; margin:0 !important;
     z-index:1000 !important; box-shadow:0 2px 12px rgba(0,0,0,.30) !important;
     height:62px !important; display:flex !important; align-items:center !important; gap:0 !important;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div {
-    background:#0F172A !important; display:flex !important;
+    background:#162C3B !important; display:flex !important;
     align-items:center !important; padding:0 !important; height:62px !important;
 }
 /* Logo column inner wrappers */
@@ -1204,7 +1424,7 @@ div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child {
     width:44px !important; height:62px !important;
     display:flex !important; align-items:center !important; justify-content:center !important;
     padding:0 !important; margin:0 !important; z-index:1001 !important;
-    background:#0F172A !important;
+    background:#162C3B !important;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child > div,
 div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child [data-testid="stVerticalBlock"],
@@ -1261,7 +1481,7 @@ div[data-testid="stHorizontalBlock"]:has(.q-nav-left) > div:last-child button:ho
 div[data-testid="stHorizontalBlock"] button[data-testid^="sl_mail_"],
 div[data-testid="stHorizontalBlock"] button[data-testid^="lc_mail_"] {
     background:#2563EB !important; color:#fff !important;
-    border-color:#2563EB !important; border-radius:3px !important;
+    border-color:#3F8E91 !important; border-radius:3px !important;
     font-size:9px !important; font-weight:700 !important;
     height:24px !important; min-height:24px !important;
     padding:0 6px !important; line-height:1 !important;
@@ -1288,7 +1508,7 @@ with _hdr_l:
     st.markdown(
         f'<div class="q-nav-left" style="display:flex;align-items:center;height:62px">'
         f'<div style="display:flex;align-items:center;gap:14px">'
-        f'<div style="width:38px;height:38px;background:linear-gradient(135deg,#3B82F6,#6366F1);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;letter-spacing:-0.5px;box-shadow:0 0 0 1px rgba(255,255,255,.12)">Q</div>'
+        f'<div style="width:38px;height:38px;background:linear-gradient(135deg,#5FA9AB,#3F8E91);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;letter-spacing:-0.5px;box-shadow:0 0 0 1px rgba(255,255,255,.12)">Q</div>'
         f'<div>'
         f'<div style="font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:16px;color:#F1F5F9;letter-spacing:2px;text-transform:uppercase">QUALESCE</div>'
         f'<div style="font-size:11px;color:#94A3B8;letter-spacing:1.2px;text-transform:uppercase;font-weight:500;margin-top:1px">AI Project Manager</div>'
@@ -1327,7 +1547,7 @@ if st.session_state.toast:
     _toast_cfg = {
         "success": ("#064E3B","#10B981","✓"),
         "error":   ("#7F1D1D","#EF4444","✗"),
-        "info":    ("#1E3A8A","#3B82F6","ℹ"),
+        "info":    ("#244E51","#5FA9AB","ℹ"),
     }
     bg, border, icon = _toast_cfg.get(t.get("type","success"), ("#064E3B","#10B981","✓"))
     st.markdown(
@@ -1369,44 +1589,57 @@ st.markdown("""
 /* Kill the element-container gap Streamlit wraps around the nav row */
 [class*="element-container"]:has(> div[data-testid="stHorizontalBlock"]:has(.q-nav-bar)) {
     margin:0 !important; padding:0 !important;
+    margin-top:18px !important;
 }
-/* Nav row: equal-width columns */
+/* Nav row: equal-width columns, pushed down with top padding */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) {
-    align-items:center !important; gap:3px !important;
-    padding:10px 8px 10px 8px !important; margin:0 !important;
+    align-items:flex-end !important; gap:4px !important;
+    padding:20px 8px 6px 8px !important; margin:0 !important;
+    border-bottom:2px solid #DFE3E7;
+    background:linear-gradient(180deg,#f8fafc 0%,#fff 100%);
+    border-radius:8px 8px 0 0;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) > div {
-    display:flex !important; align-items:center !important;
+    display:flex !important; align-items:flex-end !important;
     padding:0 !important; margin:0 !important;
-    height:32px !important; overflow:hidden !important;
+    height:36px !important; overflow:visible !important;
 }
 /* Collapse the marker-span wrapper so it takes zero space in column 0 */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [class*="element-container"]:has(.q-nav-bar) {
     display:none !important;
 }
-/* Lock every wrapper level to 32px so primary/secondary renders identically */
+/* Lock every wrapper level to 36px so primary/secondary renders identically */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) > div > div,
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [data-testid="stVerticalBlock"],
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) [class*="element-container"],
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton {
     padding:0 !important; margin:0 !important; width:100% !important;
-    height:32px !important; overflow:hidden !important;
-    display:flex !important; align-items:center !important;
+    height:36px !important; overflow:hidden !important;
+    display:flex !important; align-items:flex-end !important;
 }
-/* Nav buttons: same height for active (primary) and inactive (secondary) */
+/* Nav buttons: tab-style, active tab raised slightly */
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton button {
-    font-size:10px !important; font-weight:700 !important;
-    padding:0 6px !important;
-    height:32px !important; min-height:0 !important; max-height:32px !important;
-    line-height:32px !important; border-radius:4px !important; letter-spacing:.2px !important;
+    font-size:11px !important; font-weight:700 !important;
+    padding:0 10px !important;
+    height:34px !important; min-height:0 !important; max-height:36px !important;
+    line-height:34px !important; border-radius:6px 6px 0 0 !important; letter-spacing:.3px !important;
     width:100% !important;
-    background:#DC2626 !important; color:#fff !important; border-color:#DC2626 !important;
+    background:#DC2626 !important; color:#fff !important;
+    border:1px solid #DC2626 !important; border-bottom:none !important;
     display:flex !important; align-items:center !important; justify-content:center !important;
     white-space:nowrap !important; overflow:hidden !important;
-    box-sizing:border-box !important; vertical-align:middle !important;
+    box-sizing:border-box !important; vertical-align:bottom !important;
+    box-shadow:0 -2px 6px rgba(220,38,38,.15) !important;
+    transition:background .15s,box-shadow .15s !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton button[kind="secondary"] {
+    background:#fee2e2 !important; color:#DC2626 !important;
+    border-color:#fca5a5 !important;
+    height:30px !important; line-height:30px !important;
+    box-shadow:none !important;
 }
 div[data-testid="stHorizontalBlock"]:has(.q-nav-bar) .stButton button:hover {
-    background:#B91C1C !important; border-color:#B91C1C !important;
+    background:#B91C1C !important; border-color:#B91C1C !important; color:#fff !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1471,7 +1704,11 @@ else:
 
 st.markdown('<hr style="margin:2px 0;border:none;border-top:1px solid #E2E8F0">', unsafe_allow_html=True)
 df = st.session_state.projects   # re-bind after possible sync
-_HDR_STYLE = 'font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;letter-spacing:.7px;padding:5px 0;border-bottom:2px solid #E2E8F0'
+_HDR_STYLE = 'font-size:10px;font-weight:700;text-transform:uppercase;color:#64748B;letter-spacing:.5px;padding:8px 4px;border-bottom:2px solid #DFE3E7;white-space:nowrap;background:#F8FAFC'
+
+# ── File upload dialog (project files → OneDrive) ────────────────────────────
+if st.session_state.get("file_panel_proj"):
+    _file_upload_dialog()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MODAL: ADD / EDIT
@@ -1630,6 +1867,46 @@ if st.session_state.show_modal is not None and role in ("admin", "lead", "manage
         if roi:
             st.success(f"ROI: **{roi['pct']}%** | Hrs Saved: **{roi['saved']}** | Cost Saved: **₹{roi['cost']:,.0f}**")
 
+        # ── File Upload (OneDrive) — edit mode only ───────────────────────────
+        st.markdown("**Project Files** *(stored in OneDrive · Qualesce)*")
+        if mode == "edit":
+            proj_id   = edit_row.get("id", "")
+            proj_name = edit_row.get("name", "")
+            if proj_id and proj_name:
+                existing_files = get_project_files(proj_name)
+
+                uploaded_files = st.file_uploader(
+                    "Upload files for this project",
+                    accept_multiple_files=True,
+                    key=f"file_upload_{proj_id}",
+                    help=f"Saved to OneDrive · Qualesce / Qualesce Dashboard / {proj_name}",
+                )
+                if uploaded_files:
+                    for uf in uploaded_files:
+                        saved_name = save_project_file(proj_name, uf)
+                        st.success(f"Uploaded: {saved_name}")
+                    existing_files = get_project_files(proj_name)
+
+                if existing_files:
+                    for finfo in existing_files:
+                        fc1, fc2, fc3, fc4 = st.columns([4, 2, 2, 1])
+                        fc1.markdown(f"📎 **{finfo['name']}**")
+                        fc2.caption(fmt_file_size(finfo["size"]))
+                        with open(finfo["path"], "rb") as fh:
+                            fc3.download_button(
+                                label="⬇ Download",
+                                data=fh.read(),
+                                file_name=finfo["name"],
+                                key=f"dl_{proj_id}_{finfo['name']}",
+                            )
+                        if fc4.button("🗑", key=f"del_file_{proj_id}_{finfo['name']}", help="Delete"):
+                            delete_project_file(proj_name, finfo["name"])
+                            st.rerun()
+                else:
+                    st.caption("No files uploaded yet for this project.")
+        else:
+            st.caption("Save the project first, then use **Edit** to upload files to OneDrive.")
+
         s1, s2 = st.columns(2)
         save_clicked   = s1.button("Save",   type="primary", use_container_width=True, key="modal_save")
         cancel_clicked = s2.button("Cancel",  use_container_width=True, key="modal_cancel")
@@ -1745,116 +2022,1125 @@ _TMPL_TYPING = Template("""
 # TAB: DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.active_tab == "dashboard" and role not in ("employee",):
-    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px;letter-spacing:-.3px">Project Portfolio Dashboard</h2>', unsafe_allow_html=True)
-    st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:10px">Click any status card to drill into projects &amp; team members</p>', unsafe_allow_html=True)
+    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#1F3B4D;margin-bottom:4px;font-family:Manrope,sans-serif;letter-spacing:-.3px">Project Portfolio Dashboard</h2>', unsafe_allow_html=True)
 
-    # ── CLIENT FILTER (top, under heading) ───────────────────────────────────
-    _all_clients = sorted(set(
-        str(c).strip() for c in df["client"].dropna() if str(c).strip()
-    )) if "client" in df.columns else []
-    _cf_col1, _cf_col2 = st.columns([2, 5])
-    with _cf_col1:
-        _sel_client = st.selectbox(
-            "Filter by Client",
-            options=["All"] + _all_clients,
-            index=(["All"] + _all_clients).index(st.session_state.dash_client_filter)
-                  if st.session_state.dash_client_filter in (["All"] + _all_clients) else 0,
-            key="dash_client_select",
-            help="Filter dashboard by client."
-        )
-    if _sel_client != st.session_state.dash_client_filter:
-        st.session_state.dash_client_filter = _sel_client
-        st.rerun()
-    if st.session_state.dash_client_filter != "All":
-        _cf_col2.markdown(
-            f'<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;'
-            f'padding:8px 14px;font-size:12px;color:#1D4ED8;font-weight:600;margin-top:4px">'
-            f'Showing projects for <b>{st.session_state.dash_client_filter}</b>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
 
-    # Pre-compute client-filtered df so KPI cards and all panels reflect the filter
+    # Pre-compute df for KPI cards and all panels
     _dash_df_pre = df.copy()
-    if st.session_state.dash_client_filter != "All" and "client" in _dash_df_pre.columns:
-        _dash_df_pre = _dash_df_pre[
-            _dash_df_pre["client"].str.strip() == st.session_state.dash_client_filter
-        ]
     stats = get_stats(_dash_df_pre)
 
-    # ── KPI SLICER CARDS ──────────────────────────────────────────────────────
-    _dev_statuses = {"In Progress"}
-    _active_dev_mask = _dash_df_pre["status"].isin(_dev_statuses)
-    if "is_active" in _dash_df_pre.columns:
-        _active_dev_mask = _active_dev_mask & (
-            ~_dash_df_pre["is_active"].astype(str).str.strip().str.lower().isin(["false","0","no"])
-        )
-    _active_dev_count = int(_active_dev_mask.sum())
+    dash_df    = _dash_df_pre
+    dash_stats = stats
 
-    _kpi_extra = [
-        ("R&M",         stats["rm"],          "RM", "#3B82F6", "R&M"),
-        ("UAT",         stats["uat"],         "UA", "#F59E0B", "UAT"),
-        ("Completed",   stats["completed"],   "CP", "#10B981", "Completed"),
-        ("In Progress", stats["in_progress"], "IP", "#06B6D4", "In Progress"),
-    ]
+    # ══════════════════════════════════════════════════════════════════════════
+    # SALES & MARKETING INTELLIGENCE
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
+        '<span style="font-size:14px;font-weight:800;color:#1F3B4D">Sales &amp; Marketing</span>'
+        '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+        'background:#162C3B;color:#5FA9AB;border:1px solid #3F8E9140">Qualesce Company Profile</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-    def _kpi_card(col, label, val, icon, color, key, compact=False, animate=False, anim_delay=0):
-        active     = st.session_state.dash_slicer == key
-        bg         = f"linear-gradient(135deg,{color}18,{color}08)" if active else "#FFFFFF"
-        border     = f"2px solid {color}" if active else "1px solid #E2E8F0"
-        shadow     = f"0 6px 20px {color}44" if active else "0 4px 14px rgba(15,23,42,.08)"
-        _dot       = f"<div style='width:7px;height:7px;border-radius:50%;background:{color};margin:4px auto 0;box-shadow:0 0 6px {color}'></div>" if active else ""
-        anim_class = "kpi-anim" if animate else ""
-        anim_style = f"animation-delay:{anim_delay}s;" if animate and anim_delay else ""
-        pad        = "padding:8px 10px;" if compact else ""
-        col.markdown(
-            f'<div class="kpi-wrap {anim_class}" style="background:{bg};border:{border};box-shadow:{shadow};{pad}{anim_style}">'
-            f'<div style="font-size:{"13px" if compact else "20px"};font-weight:800;color:{color}">{icon}</div>'
-            f'<div class="kpi-num" style="color:{color};{"font-size:20px;" if compact else ""}">{val}</div>'
-            f'<div class="kpi-lbl">{label}</div>'
-            f'{_dot}'
-            f'</div>',
+    # ── COMPANY PROFILE CARD ─────────────────────────────────────────────────
+    _cp_left, _cp_right = st.columns([1.2, 1])
+
+    with _cp_left:
+        st.markdown(
+            '<div style="background:linear-gradient(135deg,#162C3B 0%,#1a3549 50%,#162C3B 100%);'
+            'border-radius:16px;padding:28px 32px;height:100%;min-height:260px;position:relative;overflow:hidden">'
+
+            # Subtle background circle decoration
+            '<div style="position:absolute;top:-30px;right:-30px;width:160px;height:160px;'
+            'border-radius:50%;background:#3F8E9115;pointer-events:none"></div>'
+            '<div style="position:absolute;bottom:-20px;left:-20px;width:100px;height:100px;'
+            'border-radius:50%;background:#3F8E9110;pointer-events:none"></div>'
+
+            # Logo / Brand mark
+            '<div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">'
+            '<div style="width:52px;height:52px;border-radius:14px;'
+            'background:linear-gradient(135deg,#3F8E91,#2F6F72);'
+            'display:flex;align-items:center;justify-content:center;'
+            'font-size:26px;font-weight:900;color:#fff;font-family:Manrope,sans-serif;'
+            'box-shadow:0 4px 12px #3F8E9140">Q</div>'
+            '<div>'
+            '<div style="font-size:22px;font-weight:900;color:#fff;font-family:Manrope,sans-serif;'
+            'letter-spacing:-0.3px;line-height:1.1">Qualesce</div>'
+            '<div style="font-size:10px;color:#5FA9AB;font-weight:600;letter-spacing:1.2px;'
+            'text-transform:uppercase;margin-top:2px">Intelligent Automation</div>'
+            '</div>'
+            '</div>'
+
+            # Tagline
+            '<div style="font-size:16px;font-weight:700;color:#E2E8F0;line-height:1.4;margin-bottom:14px;'
+            'font-family:Manrope,sans-serif">'
+            'Accelerating Enterprise Growth<br>with RPA &amp; AI Automation'
+            '</div>'
+
+            # Description
+            '<div style="font-size:11px;color:#94A3B8;line-height:1.6;margin-bottom:20px">'
+            'Qualesce delivers end-to-end automation solutions — from Robotic Process Automation '
+            'to AI-powered agents — helping enterprises eliminate manual effort, reduce costs, '
+            'and scale operations with intelligent technology.'
+            '</div>'
+
+            # Tags
+            '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+            '<span style="font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;'
+            'background:#3F8E9125;color:#5FA9AB;border:1px solid #3F8E9140">RPA</span>'
+            '<span style="font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;'
+            'background:#8B5CF615;color:#A78BFA;border:1px solid #8B5CF630">AI Agents</span>'
+            '<span style="font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;'
+            'background:#F59E0B15;color:#FCD34D;border:1px solid #F59E0B30">Enterprise</span>'
+            '<span style="font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;'
+            'background:#10B98115;color:#6EE7B7;border:1px solid #10B98130">Automation</span>'
+            '<span style="font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;'
+            'background:#3B82F615;color:#93C5FD;border:1px solid #3B82F630">www.qualesce.com</span>'
+            '</div>'
+
+            '</div>',
             unsafe_allow_html=True
         )
-        if col.button("✓" if (active and compact) else ("✓ Active" if active else ("▼ Filters" if compact else "Filter")),
-                      key=f"kpi_{label}", use_container_width=True,
-                      type="primary" if active else "secondary"):
-            st.session_state.dash_slicer = None if active else key
-            st.rerun()
 
-    # ── Fixed 6-column row (structure never changes — prevents layout shift) ───
-    _row = st.columns([0.9, 0.16, 0.9, 0.9, 0.9, 0.9])
-
-    # "All" card — same size as other slicers
-    _kpi_card(_row[0], "All", _active_dev_count, "ALL", "#3B82F6", "__active_dev__",
-              compact=False, animate=False)
-
-    # Arrow button — centred vertically
-    _row[1].markdown("<div style='height:22px'></div>", unsafe_allow_html=True)
-    _arrow_label = "▼" if st.session_state.dash_slicers_expanded else "▶"
-    if _row[1].button(_arrow_label, key="expand_slicers",
-                      help="Show / hide filter slicers",
-                      use_container_width=True):
-        st.session_state.dash_slicers_expanded = not st.session_state.dash_slicers_expanded
-        st.rerun()
-
-    # Extra slicers — cols 2-5 stay in layout but only get content when expanded
-    if st.session_state.dash_slicers_expanded:
-        for _i, (_col, (_lbl, _val, _ico, _clr, _key)) in enumerate(zip(_row[2:], _kpi_extra)):
-            _kpi_card(_col, _lbl, _val, _ico, _clr, _key,
-                      animate=True, anim_delay=round(_i * 0.08, 2))
+    with _cp_right:
+        # RPA Service tile
+        st.markdown(
+            '<div style="background:#fff;border:1.5px solid #E2E8F0;border-radius:14px;'
+            'padding:20px 22px;margin-bottom:12px;border-left:4px solid #3F8E91">'
+            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+            '<div style="width:36px;height:36px;border-radius:10px;background:#3F8E9115;'
+            'display:flex;align-items:center;justify-content:center;font-size:18px">🤖</div>'
+            '<div>'
+            '<div style="font-size:13px;font-weight:800;color:#1F3B4D">Robotic Process Automation</div>'
+            '<div style="font-size:10px;color:#3F8E91;font-weight:600">RPA · Bot Development · Workflow Automation</div>'
+            '</div>'
+            '</div>'
+            '<div style="font-size:11px;color:#64748B;line-height:1.6">'
+            'Deploy software robots that mimic human actions to automate high-volume, '
+            'rule-based tasks — reducing errors, accelerating processing speed, and freeing '
+            'your team for higher-value work.'
+            '</div>'
+            '<div style="display:flex;gap:8px;margin-top:12px">'
+            '<span style="font-size:10px;color:#3F8E91;font-weight:700">✓ Zero manual errors</span>'
+            '<span style="font-size:10px;color:#3F8E91;font-weight:700">✓ 24/7 operation</span>'
+            '<span style="font-size:10px;color:#3F8E91;font-weight:700">✓ Fast ROI</span>'
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+        # AI Agents tile
+        st.markdown(
+            '<div style="background:#fff;border:1.5px solid #E2E8F0;border-radius:14px;'
+            'padding:20px 22px;border-left:4px solid #8B5CF6">'
+            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+            '<div style="width:36px;height:36px;border-radius:10px;background:#8B5CF615;'
+            'display:flex;align-items:center;justify-content:center;font-size:18px">🧠</div>'
+            '<div>'
+            '<div style="font-size:13px;font-weight:800;color:#1F3B4D">AI Agent Solutions</div>'
+            '<div style="font-size:10px;color:#8B5CF6;font-weight:600">Agentic AI · LLM Integration · Smart Automation</div>'
+            '</div>'
+            '</div>'
+            '<div style="font-size:11px;color:#64748B;line-height:1.6">'
+            'Build intelligent AI agents that reason, plan, and act autonomously — handling '
+            'complex, unstructured workflows that traditional automation cannot. Powered by '
+            'large language models and real-time data.'
+            '</div>'
+            '<div style="display:flex;gap:8px;margin-top:12px">'
+            '<span style="font-size:10px;color:#8B5CF6;font-weight:700">✓ Understands context</span>'
+            '<span style="font-size:10px;color:#8B5CF6;font-weight:700">✓ Self-improving</span>'
+            '<span style="font-size:10px;color:#8B5CF6;font-weight:700">✓ Scales instantly</span>'
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Use pre-computed client-filtered df for all panels below
-    dash_df    = _dash_df_pre
-    dash_stats = stats
+    # ── LIVE IMPACT STATS (marketing slide numbers) ───────────────────────────
+    st.markdown(
+        '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+        'letter-spacing:.8px;margin-bottom:12px">Live Business Impact — Delivered to Clients</div>',
+        unsafe_allow_html=True
+    )
+
+    # ── 1. MARKETING IMPACT BANNER ────────────────────────────────────────────
+    _all_proj = st.session_state.projects.copy()
+    _mi_hrs   = pd.to_numeric(_all_proj.get("hours_saved",  pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    _mi_cost  = pd.to_numeric(_all_proj.get("cost_saved",   pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    _mi_done  = int((_all_proj["status"] == "Completed").sum()) if "status" in _all_proj.columns else 0
+    _mi_live  = int(_all_proj["status"].isin(["In Progress","UAT","R&M"]).sum()) if "status" in _all_proj.columns else 0
+    _mi_clients = _all_proj["client"].dropna().nunique() if "client" in _all_proj.columns else 0
+    _mi_cost_disp = (f"₹{_mi_cost/10_000_000:.2f} Cr" if _mi_cost >= 10_000_000
+                     else f"₹{int(_mi_cost/1000):,}K" if _mi_cost >= 1000
+                     else "—")
+    _mi_hrs_disp  = f"{int(_mi_hrs):,}" if _mi_hrs > 0 else "—"
+
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#162C3B 0%,#1F3B4D 100%);'
+        f'border-radius:14px;padding:20px 28px;margin-bottom:16px;display:flex;'
+        f'align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">'
+        f'<div>'
+        f'<div style="font-size:11px;font-weight:700;color:#5FA9AB;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Total Impact Delivered to Clients</div>'
+        f'<div style="font-size:10px;color:#94A3B8">Automation ROI generated across all Qualesce projects</div>'
+        f'</div>'
+        f'<div style="display:flex;gap:32px;flex-wrap:wrap">'
+        f'<div style="text-align:center">'
+        f'<div style="font-size:28px;font-weight:900;color:#10B981;line-height:1">{_mi_hrs_disp}</div>'
+        f'<div style="font-size:10px;color:#94A3B8;margin-top:2px">Hours Saved</div>'
+        f'</div>'
+        f'<div style="text-align:center">'
+        f'<div style="font-size:28px;font-weight:900;color:#F59E0B;line-height:1">{_mi_cost_disp}</div>'
+        f'<div style="font-size:10px;color:#94A3B8;margin-top:2px">Cost Saved</div>'
+        f'</div>'
+        f'<div style="text-align:center">'
+        f'<div style="font-size:28px;font-weight:900;color:#3B82F6;line-height:1">{_mi_done}</div>'
+        f'<div style="font-size:10px;color:#94A3B8;margin-top:2px">Projects Delivered</div>'
+        f'</div>'
+        f'<div style="text-align:center">'
+        f'<div style="font-size:28px;font-weight:900;color:#8B5CF6;line-height:1">{_mi_live}</div>'
+        f'<div style="font-size:10px;color:#94A3B8;margin-top:2px">Live Now</div>'
+        f'</div>'
+        f'<div style="text-align:center">'
+        f'<div style="font-size:28px;font-weight:900;color:#EC4899;line-height:1">{_mi_clients}</div>'
+        f'<div style="font-size:10px;color:#94A3B8;margin-top:2px">Clients Served</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    _sm_col1, _sm_col2 = st.columns(2)
+
+    # ── 2. PRESALES CONVERSION PIPELINE ──────────────────────────────────────
+    with _sm_col1:
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px">'
+                'Presales → Live Conversion Pipeline</div>',
+                unsafe_allow_html=True
+            )
+            _ap = _all_proj.copy()
+            _conv_presales = int(_ap["status"].isin(["Presales"]).sum())                     if "status" in _ap.columns else 0
+            _conv_poc      = int(_ap["status"].str.contains("POC", na=False).sum())           if "status" in _ap.columns else 0
+            _conv_pdd      = int((_ap["status"] == "PDD").sum())                              if "status" in _ap.columns else 0
+            _conv_dev      = int(_ap["status"].isin(["In Progress"]).sum())                   if "status" in _ap.columns else 0
+            _conv_uat      = int(_ap["status"].isin(["UAT","R&M"]).sum())                     if "status" in _ap.columns else 0
+            _conv_done     = int((_ap["status"] == "Completed").sum())                        if "status" in _ap.columns else 0
+            _conv_disc     = int((_ap["status"] == "Discontinued").sum())                     if "status" in _ap.columns else 0
+            _total_engaged = _conv_presales + _conv_poc + _conv_pdd + _conv_dev + _conv_uat + _conv_done + _conv_disc
+            _live_or_done  = _conv_dev + _conv_uat + _conv_done
+
+            # Conversion rate: how many deals became live projects
+            _conv_rate = round((_live_or_done / max(_total_engaged, 1)) * 100)
+
+            _pipeline_stages = [
+                ("Presales",    _conv_presales, "#0EA5E9"),
+                ("POC",         _conv_poc,      "#8B5CF6"),
+                ("PDD / Design",_conv_pdd,      "#F59E0B"),
+                ("Development", _conv_dev,      "#06B6D4"),
+                ("UAT / R&M",   _conv_uat,      "#3B82F6"),
+                ("Completed",   _conv_done,     "#10B981"),
+            ]
+            _conv_html = '<div style="display:flex;flex-direction:column;gap:8px">'
+            for _ps_label, _ps_count, _ps_color in _pipeline_stages:
+                _bar_pct = round((_ps_count / max(_total_engaged, 1)) * 100)
+                _conv_html += (
+                    f'<div>'
+                    f'<div style="display:flex;justify-content:space-between;margin-bottom:3px">'
+                    f'<span style="font-size:11px;font-weight:600;color:#374151">{_ps_label}</span>'
+                    f'<span style="font-size:11px;font-weight:700;color:{_ps_color}">{_ps_count}</span>'
+                    f'</div>'
+                    f'<div style="height:8px;background:#F1F5F9;border-radius:4px;overflow:hidden">'
+                    f'<div style="height:100%;width:{_bar_pct}%;background:{_ps_color};border-radius:4px;'
+                    f'transition:width .4s ease"></div>'
+                    f'</div>'
+                    f'</div>'
+                )
+            _conv_html += '</div>'
+            st.markdown(_conv_html, unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="display:flex;gap:20px;padding:10px 14px;background:#F0FDF4;'
+                f'border-radius:8px;border:1px solid #BBF7D0">'
+                f'<div><span style="font-size:20px;font-weight:900;color:#10B981">{_conv_rate}%</span>'
+                f'<div style="font-size:10px;color:#64748B">Conversion Rate</div></div>'
+                f'<div><span style="font-size:20px;font-weight:900;color:#1F3B4D">{_live_or_done}</span>'
+                f'<div style="font-size:10px;color:#64748B">Became Live Projects</div></div>'
+                f'<div><span style="font-size:20px;font-weight:900;color:#EF4444">{_conv_disc}</span>'
+                f'<div style="font-size:10px;color:#64748B">Discontinued</div></div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+    # ── 3. SERVICE MIX & LICENSE RENEWAL OPPORTUNITIES ───────────────────────
+    with _sm_col2:
+        # Service mix donut
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">'
+                'Service Mix — RPA vs AI Agent vs Presales</div>',
+                unsafe_allow_html=True
+            )
+            _pt_col = _ap.get("proj_type", pd.Series(dtype=str)).fillna("").str.strip()
+            _rpa_n   = int((_pt_col == "RPA").sum())
+            _ai_n    = int((_pt_col == "AI Agent").sum())
+            _pre_n   = int((_pt_col == "Presales").sum())
+            _other_n = int(len(_pt_col) - _rpa_n - _ai_n - _pre_n)
+            _sm_labels = ["RPA", "AI Agent", "Presales", "Other"]
+            _sm_values = [_rpa_n, _ai_n, _pre_n, _other_n]
+            _sm_colors = ["#3F8E91", "#8B5CF6", "#F59E0B", "#94A3B8"]
+            _sm_fig = go.Figure(go.Pie(
+                labels=_sm_labels, values=_sm_values,
+                hole=0.6,
+                marker=dict(colors=_sm_colors),
+                textinfo="percent+label",
+                textfont=dict(size=10),
+            ))
+            _sm_fig.update_layout(
+                margin=dict(t=0, b=0, l=0, r=0), height=180,
+                showlegend=False,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                annotations=[dict(text=f"<b>{sum(_sm_values)}</b><br>Projects", x=0.5, y=0.5,
+                                  font=dict(size=12), showarrow=False)]
+            )
+            st.plotly_chart(_sm_fig, use_container_width=True)
+
+        # License renewal alerts
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                'text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">'
+                'License Renewal Opportunities — Upsell Alerts</div>',
+                unsafe_allow_html=True
+            )
+            _sold_lic = auth.get_all_sold_licenses()
+            _today_sm = date.today()
+            _renewal_rows = []
+            for _sl in _sold_lic:
+                _ed = str(_sl.get("end_date","")).strip()
+                if not _ed:
+                    continue
+                for _fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+                    try:
+                        _exp_d = datetime.strptime(_ed, _fmt).date()
+                        _days  = (_exp_d - _today_sm).days
+                        _renewal_rows.append((_days, _sl, _exp_d))
+                        break
+                    except ValueError:
+                        pass
+            _renewal_rows.sort(key=lambda x: x[0])
+            _upcoming = [r for r in _renewal_rows if r[0] <= 90]
+            if _upcoming:
+                for _days_left, _sl, _exp_d in _upcoming:
+                    if _days_left < 0:
+                        _rc, _rt, _rbg = "#B23A3A", "Expired", "#FCEAEA"
+                    elif _days_left <= 30:
+                        _rc, _rt, _rbg = "#DC2626", f"{_days_left}d left", "#FEF2F2"
+                    elif _days_left <= 60:
+                        _rc, _rt, _rbg = "#B45309", f"{_days_left}d left", "#FFFBEB"
+                    else:
+                        _rc, _rt, _rbg = "#92400E", f"{_days_left}d left", "#FEF3C7"
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;justify-content:space-between;'
+                        f'padding:8px 12px;background:{_rbg};border-radius:8px;margin-bottom:6px;'
+                        f'border-left:3px solid {_rc}">'
+                        f'<div>'
+                        f'<div style="font-size:12px;font-weight:700;color:#1F3B4D">{esc(str(_sl["tool_name"]))}</div>'
+                        f'<div style="font-size:10px;color:#64748B">{esc(str(_sl["client"]))} · '
+                        f'{_sl["no_of_licenses"]} licence(s) · expires {_exp_d.strftime("%d %b %Y")}</div>'
+                        f'</div>'
+                        f'<span style="font-size:10px;font-weight:700;color:{_rc};'
+                        f'background:{"#ffffff80"};padding:3px 10px;border-radius:12px;'
+                        f'border:1px solid {_rc}40;white-space:nowrap">{_rt}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.markdown(
+                    '<div style="text-align:center;padding:18px;color:#94A3B8;font-size:11px">'
+                    'No licenses expiring in the next 90 days.<br>'
+                    '<span style="font-size:10px">Add sold licenses in the License tab to track renewals.</span>'
+                    '</div>',
+                    unsafe_allow_html=True
+                )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── PROJECT TYPE BREAKDOWN ────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # QUALESCE INDIA — COMPANY OVERVIEW
+    # ══════════════════════════════════════════════════════════════════════════
     st.markdown(
-        '<h3 style="font-size:15px;font-weight:700;color:#0F172A;margin:0 0 10px;letter-spacing:-.2px">'
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
+        '<span style="font-size:14px;font-weight:800;color:#1F3B4D">Qualesce India</span>'
+        '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+        'background:#F0FDF4;color:#10B981;border:1px solid #BBF7D0">Company Overview</span>'
+        '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+        'background:#EFF6FF;color:#3B82F6;border:1px solid #BFDBFE">Live Portfolio Data</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    # Hero company card
+    _co_total_projs = int(_mi_done + _mi_live)
+    _co_client_cnt  = int(_mi_clients)
+    _co_stats_html  = ""
+    for _csv, _csl, _csc in [
+        ("RPA + AI",
+         "Service Lines",
+         "#5FA9AB"),
+        (str(_co_client_cnt) if _co_client_cnt else "4+",
+         "Enterprise Clients",
+         "#A78BFA"),
+        (str(_co_total_projs) if _co_total_projs else "46+",
+         "Total Projects",
+         "#6EE7B7"),
+        ("412%",
+         "Portfolio ROI",
+         "#FCD34D"),
+    ]:
+        _co_stats_html += (
+            f'<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);'
+            f'border-radius:12px;padding:14px;text-align:center">'
+            f'<div style="font-size:20px;font-weight:900;color:{_csc};line-height:1">{_csv}</div>'
+            f'<div style="font-size:9px;color:#94A3B8;margin-top:4px;font-weight:600;'
+            f'text-transform:uppercase;letter-spacing:.6px">{_csl}</div>'
+            f'</div>'
+        )
+    st.markdown(
+        '<div style="background:linear-gradient(135deg,#0F172A 0%,#1E293B 60%,#0F2027 100%);'
+        'border-radius:18px;padding:28px 32px;margin-bottom:16px;'
+        'border:1px solid rgba(95,169,171,0.25);position:relative;overflow:hidden">'
+        '<div style="position:absolute;top:-50px;right:-50px;width:220px;height:220px;'
+        'border-radius:50%;background:rgba(95,169,171,0.07);pointer-events:none"></div>'
+        '<div style="position:absolute;bottom:-30px;left:30px;width:140px;height:140px;'
+        'border-radius:50%;background:rgba(139,92,246,0.05);pointer-events:none"></div>'
+        '<div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">'
+        '<div style="width:54px;height:54px;border-radius:14px;'
+        'background:linear-gradient(135deg,#3F8E91,#2F6F72);display:flex;align-items:center;'
+        'justify-content:center;font-size:28px;font-weight:900;color:#fff;'
+        'font-family:Manrope,sans-serif;box-shadow:0 4px 16px rgba(63,142,145,0.35)">Q</div>'
+        '<div>'
+        '<div style="font-size:22px;font-weight:900;color:#fff;font-family:Manrope,sans-serif;'
+        'letter-spacing:-0.4px;line-height:1.1">Qualesce India</div>'
+        '<div style="font-size:10px;color:#5FA9AB;font-weight:600;letter-spacing:1.2px;'
+        'text-transform:uppercase;margin-top:3px">Intelligent Automation · RPA · AI Agents</div>'
+        '</div>'
+        '</div>'
+        '<div style="font-size:13px;font-weight:600;color:#CBD5E1;line-height:1.6;margin-bottom:4px">'
+        'Enterprise-grade automation through RPA and AI Agents — eliminating manual effort, '
+        'accelerating ROI, and scaling operations across India.'
+        '</div>'
+        '<div style="font-size:10px;color:#64748B;margin-bottom:22px">'
+        'End-to-end automation consulting, development &amp; managed services &nbsp;·&nbsp; '
+        '<span style="color:#5FA9AB;font-weight:600">www.qualesce.com</span>'
+        '</div>'
+        f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">'
+        f'{_co_stats_html}'
+        f'</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    # Services deep-dive (2 columns)
+    _svc_c1, _svc_c2 = st.columns(2)
+    _svc_rpa_caps = [
+        "Invoice & PO processing automation",
+        "ERP / SAP data entry & reconciliation",
+        "Compliance & audit report generation",
+        "Vendor master & data management",
+        "Cross-system data migration & sync",
+    ]
+    _svc_ai_caps = [
+        "Intelligent document understanding (IDP)",
+        "Conversational AI & chatbot integration",
+        "Predictive analytics & decision support",
+        "Multi-step agentic workflow orchestration",
+        "LLM-powered data extraction & classification",
+    ]
+    with _svc_c1:
+        _rpa_caps_html = "".join(
+            f'<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:7px">'
+            f'<div style="width:6px;height:6px;border-radius:50%;background:#3F8E91;'
+            f'flex-shrink:0;margin-top:5px"></div>'
+            f'<span style="font-size:11px;color:#475569">{cap}</span></div>'
+            for cap in _svc_rpa_caps
+        )
+        st.markdown(
+            '<div style="background:#fff;border:1.5px solid #E2E8F0;border-radius:16px;'
+            'padding:24px;border-top:4px solid #3F8E91">'
+            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">'
+            '<div style="width:44px;height:44px;border-radius:12px;background:#3F8E9115;'
+            'display:flex;align-items:center;justify-content:center;font-size:22px">🤖</div>'
+            '<div>'
+            '<div style="font-size:15px;font-weight:800;color:#1F3B4D">'
+            'Robotic Process Automation</div>'
+            '<div style="font-size:10px;color:#3F8E91;font-weight:700;letter-spacing:.4px">'
+            'RPA · BOT DEV · WORKFLOW AUTOMATION</div>'
+            '</div></div>'
+            '<div style="font-size:12px;color:#475569;line-height:1.7;margin-bottom:14px">'
+            'Software robots that replicate human actions across enterprise systems — automating '
+            'high-volume, rule-based tasks with zero errors, 24/7 availability, and measurable ROI.'
+            '</div>'
+            '<div style="font-size:10px;font-weight:700;color:#1F3B4D;text-transform:uppercase;'
+            'letter-spacing:.6px;margin-bottom:8px">Key Capabilities</div>'
+            f'<div>{_rpa_caps_html}</div>'
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">'
+            '<span style="font-size:10px;color:#3F8E91;font-weight:700;padding:3px 10px;'
+            'background:#3F8E9110;border-radius:20px;border:1px solid #3F8E9130">✓ Zero errors</span>'
+            '<span style="font-size:10px;color:#3F8E91;font-weight:700;padding:3px 10px;'
+            'background:#3F8E9110;border-radius:20px;border:1px solid #3F8E9130">✓ 24/7 uptime</span>'
+            '<span style="font-size:10px;color:#3F8E91;font-weight:700;padding:3px 10px;'
+            'background:#3F8E9110;border-radius:20px;border:1px solid #3F8E9130">✓ Fast ROI</span>'
+            '</div></div>',
+            unsafe_allow_html=True
+        )
+    with _svc_c2:
+        _ai_caps_html = "".join(
+            f'<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:7px">'
+            f'<div style="width:6px;height:6px;border-radius:50%;background:#8B5CF6;'
+            f'flex-shrink:0;margin-top:5px"></div>'
+            f'<span style="font-size:11px;color:#475569">{cap}</span></div>'
+            for cap in _svc_ai_caps
+        )
+        st.markdown(
+            '<div style="background:#fff;border:1.5px solid #E2E8F0;border-radius:16px;'
+            'padding:24px;border-top:4px solid #8B5CF6">'
+            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">'
+            '<div style="width:44px;height:44px;border-radius:12px;background:#8B5CF615;'
+            'display:flex;align-items:center;justify-content:center;font-size:22px">🧠</div>'
+            '<div>'
+            '<div style="font-size:15px;font-weight:800;color:#1F3B4D">AI Agent Solutions</div>'
+            '<div style="font-size:10px;color:#8B5CF6;font-weight:700;letter-spacing:.4px">'
+            'AGENTIC AI · LLM INTEGRATION · SMART AUTOMATION</div>'
+            '</div></div>'
+            '<div style="font-size:12px;color:#475569;line-height:1.7;margin-bottom:14px">'
+            'Intelligent AI agents that reason, plan, and act autonomously — handling complex, '
+            'unstructured workflows powered by large language models and real-time enterprise data.'
+            '</div>'
+            '<div style="font-size:10px;font-weight:700;color:#1F3B4D;text-transform:uppercase;'
+            'letter-spacing:.6px;margin-bottom:8px">Key Capabilities</div>'
+            f'<div>{_ai_caps_html}</div>'
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">'
+            '<span style="font-size:10px;color:#8B5CF6;font-weight:700;padding:3px 10px;'
+            'background:#8B5CF615;border-radius:20px;border:1px solid #8B5CF630">'
+            '✓ Context-aware</span>'
+            '<span style="font-size:10px;color:#8B5CF6;font-weight:700;padding:3px 10px;'
+            'background:#8B5CF615;border-radius:20px;border:1px solid #8B5CF630">'
+            '✓ Self-improving</span>'
+            '<span style="font-size:10px;color:#8B5CF6;font-weight:700;padding:3px 10px;'
+            'background:#8B5CF615;border-radius:20px;border:1px solid #8B5CF630">'
+            '✓ Scales instantly</span>'
+            '</div></div>',
+            unsafe_allow_html=True
+        )
+
+    # Client portfolio cards (live DB)
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+        'letter-spacing:.8px;margin-bottom:12px">Client Portfolio · Enterprise Accounts</div>',
+        unsafe_allow_html=True
+    )
+    _co_df = st.session_state.projects.copy()
+    _co_cg: dict = {}
+    if "client" in _co_df.columns:
+        for _, _crow in _co_df.iterrows():
+            _cl = str(_crow.get("client","")).strip()
+            if not _cl or _cl in ("nan","None",""):
+                continue
+            if _cl not in _co_cg:
+                _co_cg[_cl] = {"rpa":0,"ai":0,"presales":0,"other":0,
+                                "total":0,"done":0,"live":0}
+            _co_cg[_cl]["total"] += 1
+            _cpt2 = str(_crow.get("proj_type","")).strip().lower()
+            _cst2 = str(_crow.get("status","")).strip().lower()
+            if   _cpt2 == "rpa":                            _co_cg[_cl]["rpa"]      += 1
+            elif _cpt2 == "ai agent":                       _co_cg[_cl]["ai"]       += 1
+            elif "presales" in _cpt2 or "poc" in _cst2:     _co_cg[_cl]["presales"] += 1
+            else:                                            _co_cg[_cl]["other"]    += 1
+            if   _cst2 == "completed":                      _co_cg[_cl]["done"] += 1
+            elif _cst2 in ("in progress","uat","r&m"):       _co_cg[_cl]["live"] += 1
+
+    if _co_cg:
+        _cg_srt    = sorted(_co_cg.items(), key=lambda x: x[1]["total"], reverse=True)
+        _cl_show   = _cg_srt[:4]
+        _cl_n      = max(len(_cl_show), 1)
+        _cl_cols2  = st.columns(_cl_n)
+        _cl_pal    = ["#3F8E91","#8B5CF6","#F59E0B","#10B981","#3B82F6","#EC4899"]
+        for _ci2, (_cname2, _cinfo2) in enumerate(_cl_show):
+            _ca2   = _cl_pal[_ci2 % len(_cl_pal)]
+            _clin2 = esc(_cname2[0].upper())
+            _cnes2 = esc(_cname2)
+            with _cl_cols2[_ci2]:
+                st.markdown(
+                    f'<div style="background:linear-gradient(135deg,{_ca2}15,{_ca2}06);'
+                    f'border:1.5px solid {_ca2}44;border-radius:14px;padding:18px 16px;'
+                    f'border-top:3px solid {_ca2}">'
+                    f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
+                    f'<div style="width:38px;height:38px;border-radius:10px;background:{_ca2}25;'
+                    f'border:1px solid {_ca2}50;display:flex;align-items:center;'
+                    f'justify-content:center;font-size:16px;font-weight:900;color:{_ca2}">'
+                    f'{_clin2}</div>'
+                    f'<div style="min-width:0">'
+                    f'<div style="font-size:13px;font-weight:800;color:#1F3B4D;'
+                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_cnes2}</div>'
+                    f'<div style="font-size:9px;color:#64748B;font-weight:600">Enterprise Client</div>'
+                    f'</div></div>'
+                    f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+                    f'<div style="text-align:center;background:#fff;border-radius:8px;'
+                    f'padding:8px 4px;border:1px solid #F1F5F9">'
+                    f'<div style="font-size:20px;font-weight:900;color:{_ca2}">'
+                    f'{_cinfo2["total"]}</div>'
+                    f'<div style="font-size:9px;color:#94A3B8;margin-top:2px">Total</div>'
+                    f'</div>'
+                    f'<div style="text-align:center;background:#fff;border-radius:8px;'
+                    f'padding:8px 4px;border:1px solid #F1F5F9">'
+                    f'<div style="font-size:20px;font-weight:900;color:#10B981">'
+                    f'{_cinfo2["done"]}</div>'
+                    f'<div style="font-size:9px;color:#94A3B8;margin-top:2px">Done</div>'
+                    f'</div>'
+                    f'<div style="text-align:center;background:#fff;border-radius:8px;'
+                    f'padding:8px 4px;border:1px solid #F1F5F9">'
+                    f'<div style="font-size:20px;font-weight:900;color:#3B82F6">'
+                    f'{_cinfo2["rpa"]}</div>'
+                    f'<div style="font-size:9px;color:#94A3B8;margin-top:2px">RPA</div>'
+                    f'</div>'
+                    f'<div style="text-align:center;background:#fff;border-radius:8px;'
+                    f'padding:8px 4px;border:1px solid #F1F5F9">'
+                    f'<div style="font-size:20px;font-weight:900;color:#8B5CF6">'
+                    f'{_cinfo2["ai"]}</div>'
+                    f'<div style="font-size:9px;color:#94A3B8;margin-top:2px">AI Agent</div>'
+                    f'</div>'
+                    f'</div></div>',
+                    unsafe_allow_html=True
+                )
+    else:
+        st.markdown(
+            '<div style="text-align:center;padding:18px;color:#94A3B8;font-size:11px;'
+            'background:#F8FAFC;border-radius:12px;border:1px solid #E2E8F0">'
+            'No client data. Add projects with client names to populate this panel.</div>',
+            unsafe_allow_html=True
+        )
+
+    # Active projects table (live DB)
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+        'letter-spacing:.8px;margin-bottom:12px">Active Portfolio · Live Projects</div>',
+        unsafe_allow_html=True
+    )
+    _proj_sc2 = {
+        "In Progress":"#3B82F6","UAT":"#8B5CF6","R&M":"#F59E0B",
+        "PDD":"#0EA5E9","Completed":"#10B981","Presales":"#64748B","Discontinued":"#EF4444",
+    }
+    _live_pf2 = (
+        _co_df[_co_df["status"].isin(["In Progress","UAT","R&M","PDD"])]
+        if "status" in _co_df.columns else pd.DataFrame()
+    )
+    if not _live_pf2.empty:
+        _pt_html2 = (
+            '<div style="background:#fff;border:1px solid #E2E8F0;border-radius:14px;'
+            'overflow:hidden">'
+            '<div style="display:grid;grid-template-columns:2fr 1.2fr 0.8fr 0.8fr 1fr;'
+            'padding:10px 16px;background:#F8FAFC;border-bottom:1px solid #E2E8F0">'
+        )
+        for _hdr2 in ("Project","Client","Type","Status","Lead"):
+            _pt_html2 += (
+                f'<div style="font-size:10px;font-weight:700;color:#64748B;'
+                f'text-transform:uppercase;letter-spacing:.5px">{_hdr2}</div>'
+            )
+        _pt_html2 += '</div>'
+        for _pi2, (_, _pr2) in enumerate(_live_pf2.head(8).iterrows()):
+            _prn2  = esc(str(_pr2.get("name",     "—")))
+            _prc3  = esc(str(_pr2.get("client",   "—")))
+            _prt2  = esc(str(_pr2.get("proj_type","—")))
+            _prs2  = str(_pr2.get("status","—"))
+            _prl2  = esc(str(_pr2.get("lead",     "—")))
+            _prc4  = _proj_sc2.get(_prs2, "#94A3B8")
+            _pbg2  = "#FAFAFA" if _pi2 % 2 == 0 else "#fff"
+            _pt_html2 += (
+                f'<div style="display:grid;grid-template-columns:2fr 1.2fr 0.8fr 0.8fr 1fr;'
+                f'padding:10px 16px;background:{_pbg2};border-bottom:1px solid #F1F5F9;'
+                f'align-items:center">'
+                f'<div style="font-size:12px;font-weight:600;color:#1F3B4D;overflow:hidden;'
+                f'text-overflow:ellipsis;white-space:nowrap">{_prn2}</div>'
+                f'<div style="font-size:11px;color:#475569">{_prc3}</div>'
+                f'<div style="font-size:10px;font-weight:600;color:#64748B;background:#F1F5F9;'
+                f'border-radius:6px;padding:2px 8px;display:inline-block">{_prt2}</div>'
+                f'<div><span style="font-size:10px;font-weight:700;color:{_prc4};'
+                f'background:{_prc4}18;border-radius:6px;padding:2px 8px;display:inline-block">'
+                f'{esc(_prs2)}</span></div>'
+                f'<div style="font-size:11px;color:#475569">{_prl2}</div>'
+                f'</div>'
+            )
+        _pt_html2 += '</div>'
+        st.markdown(_pt_html2, unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div style="text-align:center;padding:20px;color:#94A3B8;font-size:11px;'
+            'background:#F8FAFC;border-radius:12px;border:1px solid #E2E8F0">'
+            'No active projects. Projects in progress will appear here.</div>',
+            unsafe_allow_html=True
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if role == "sales":
+        # ══════════════════════════════════════════════════════════════════════
+        # SALES ROLE — DATA CHARTS (replaces static marketing cards)
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
+            '<span style="font-size:14px;font-weight:800;color:#1F3B4D">Portfolio Analytics</span>'
+            '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+            'background:#EFF6FF;color:#3B82F6;border:1px solid #BFDBFE">Live Data</span>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        _sc1, _sc2 = st.columns(2)
+
+        # Chart 1 — Conversion Funnel
+        with _sc1:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                    'letter-spacing:.8px;margin-bottom:8px">Presales → Delivery Conversion Funnel</div>',
+                    unsafe_allow_html=True
+                )
+                _fap = _all_proj.copy()
+                _funnel_stages = [
+                    ("Presales",    int(_fap["status"].isin(["Presales"]).sum())          if "status" in _fap.columns else 0),
+                    ("POC",         int(_fap["status"].str.contains("POC", na=False).sum()) if "status" in _fap.columns else 0),
+                    ("PDD/Design",  int((_fap["status"] == "PDD").sum())                  if "status" in _fap.columns else 0),
+                    ("Development", int(_fap["status"].isin(["In Progress"]).sum())       if "status" in _fap.columns else 0),
+                    ("UAT / R&M",   int(_fap["status"].isin(["UAT","R&M"]).sum())         if "status" in _fap.columns else 0),
+                    ("Completed",   int((_fap["status"] == "Completed").sum())            if "status" in _fap.columns else 0),
+                ]
+                _funnel_labels = [s for s, _ in _funnel_stages]
+                _funnel_values = [v for _, v in _funnel_stages]
+                _funnel_colors = ["#0EA5E9","#8B5CF6","#F59E0B","#06B6D4","#3B82F6","#10B981"]
+                _f_fig = go.Figure(go.Funnel(
+                    y=_funnel_labels, x=_funnel_values,
+                    textinfo="value+percent initial",
+                    textfont=dict(size=11),
+                    marker=dict(color=_funnel_colors),
+                    connector=dict(line=dict(color="#E2E8F0", width=1)),
+                ))
+                _f_fig.update_layout(
+                    margin=dict(t=0, b=0, l=80, r=20), height=260,
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(size=10),
+                )
+                st.plotly_chart(_f_fig, use_container_width=True)
+
+        # Chart 2 — Top Clients by Project Count
+        with _sc2:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                    'letter-spacing:.8px;margin-bottom:8px">Top Clients by Project Count</div>',
+                    unsafe_allow_html=True
+                )
+                if "client" in _all_proj.columns:
+                    _cl_counts = (
+                        _all_proj.groupby("client")
+                        .size().reset_index(name="count")
+                        .sort_values("count", ascending=True)
+                        .tail(10)
+                    )
+                    _cl_fig = go.Figure(go.Bar(
+                        x=_cl_counts["count"], y=_cl_counts["client"],
+                        orientation="h",
+                        marker=dict(
+                            color=_cl_counts["count"],
+                            colorscale=[[0,"rgba(63,142,145,0.18)"],[1,"#3F8E91"]],
+                            showscale=False,
+                        ),
+                        text=_cl_counts["count"], textposition="outside",
+                        textfont=dict(size=10),
+                    ))
+                    _cl_fig.update_layout(
+                        margin=dict(t=0, b=0, l=10, r=30), height=260,
+                        xaxis=dict(visible=False),
+                        yaxis=dict(tickfont=dict(size=10), autorange="reversed" if len(_cl_counts) > 1 else True),
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(_cl_fig, use_container_width=True)
+                else:
+                    st.info("No client data available.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        _sc3, _sc4 = st.columns(2)
+
+        # Chart 3 — Cost Saved by Client
+        with _sc3:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                    'letter-spacing:.8px;margin-bottom:8px">Cost Savings Delivered — by Client (₹K)</div>',
+                    unsafe_allow_html=True
+                )
+                if "client" in _all_proj.columns and "cost_saved" in _all_proj.columns:
+                    _cs_df = _all_proj.copy()
+                    _cs_df["cost_saved_n"] = pd.to_numeric(_cs_df["cost_saved"], errors="coerce").fillna(0)
+                    _cs_grp = (
+                        _cs_df.groupby("client")["cost_saved_n"]
+                        .sum().reset_index()
+                        .sort_values("cost_saved_n", ascending=True)
+                        .tail(10)
+                    )
+                    _cs_grp["label"] = (_cs_grp["cost_saved_n"] / 1000).round(1).astype(str) + "K"
+                    _has_data = _cs_grp["cost_saved_n"].sum() > 0
+                    if _has_data:
+                        _cs_fig = go.Figure(go.Bar(
+                            x=_cs_grp["cost_saved_n"] / 1000,
+                            y=_cs_grp["client"],
+                            orientation="h",
+                            marker=dict(color="#F59E0B", opacity=0.85),
+                            text=_cs_grp["label"], textposition="outside",
+                            textfont=dict(size=10),
+                        ))
+                        _cs_fig.update_layout(
+                            margin=dict(t=0, b=0, l=10, r=50), height=260,
+                            xaxis=dict(visible=False),
+                            yaxis=dict(tickfont=dict(size=10)),
+                            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                        )
+                        st.plotly_chart(_cs_fig, use_container_width=True)
+                    else:
+                        st.info("No cost savings data yet. Add cost_saved values in the Projects tab.")
+                else:
+                    st.info("No cost savings data available.")
+
+        # Chart 4 — Monthly Project Activity
+        with _sc4:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                    'letter-spacing:.8px;margin-bottom:8px">Monthly Project Activity</div>',
+                    unsafe_allow_html=True
+                )
+                if "start" in _all_proj.columns:
+                    _ma_df = _all_proj.copy()
+                    _ma_df["start_dt"] = pd.to_datetime(_ma_df["start"], dayfirst=True, errors="coerce")
+                    _ma_df = _ma_df.dropna(subset=["start_dt"])
+                    if not _ma_df.empty:
+                        _ma_df["ym"] = _ma_df["start_dt"].dt.to_period("M").astype(str)
+                        _ma_grp = _ma_df.groupby("ym").size().reset_index(name="count").tail(12)
+                        _ma_fig = go.Figure()
+                        _ma_fig.add_trace(go.Bar(
+                            x=_ma_grp["ym"], y=_ma_grp["count"],
+                            marker=dict(color="#8B5CF6", opacity=0.85),
+                            name="Projects Started",
+                        ))
+                        _ma_fig.update_layout(
+                            margin=dict(t=10, b=30, l=20, r=10), height=240,
+                            xaxis=dict(tickfont=dict(size=9), tickangle=-30),
+                            yaxis=dict(tickfont=dict(size=10), gridcolor="#F1F5F9"),
+                            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                            showlegend=False,
+                        )
+                        st.plotly_chart(_ma_fig, use_container_width=True)
+                    else:
+                        st.info("No start date data to plot activity.")
+                else:
+                    st.info("No start date column found.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        _sc5, _sc6 = st.columns([1, 1.4])
+
+        # Chart 5 — Win Rate Gauge
+        with _sc5:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                    'letter-spacing:.8px;margin-bottom:8px">Presales Win Rate</div>',
+                    unsafe_allow_html=True
+                )
+                _wr_total   = int(_all_proj["status"].notna().sum()) if "status" in _all_proj.columns else 0
+                _wr_won     = int(_all_proj["status"].isin(["Completed","In Progress","UAT","R&M","PDD"]).sum()) if "status" in _all_proj.columns else 0
+                _wr_disc    = int((_all_proj["status"] == "Discontinued").sum()) if "status" in _all_proj.columns else 0
+                _wr_rate    = round((_wr_won / max(_wr_total, 1)) * 100)
+                _wr_fig = go.Figure(go.Indicator(
+                    mode="gauge+number+delta",
+                    value=_wr_rate,
+                    number=dict(suffix="%", font=dict(size=32, color="#1F3B4D")),
+                    delta=dict(reference=60, valueformat=".0f", suffix="%"),
+                    gauge=dict(
+                        axis=dict(range=[0, 100], tickfont=dict(size=9)),
+                        bar=dict(color="#10B981"),
+                        bgcolor="#F8FAFC",
+                        bordercolor="#E2E8F0",
+                        steps=[
+                            dict(range=[0, 40],   color="#FEE2E2"),
+                            dict(range=[40, 70],  color="#FEF3C7"),
+                            dict(range=[70, 100], color="#DCFCE7"),
+                        ],
+                        threshold=dict(line=dict(color="#3B82F6", width=3), thickness=0.75, value=60),
+                    ),
+                ))
+                _wr_fig.update_layout(
+                    margin=dict(t=10, b=0, l=10, r=10), height=210,
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(_wr_fig, use_container_width=True)
+                st.markdown(
+                    f'<div style="display:flex;gap:16px;justify-content:center;padding:6px 0">'
+                    f'<span style="font-size:11px;color:#10B981;font-weight:700">✓ {_wr_won} Active/Done</span>'
+                    f'<span style="font-size:11px;color:#EF4444;font-weight:700">✗ {_wr_disc} Discontinued</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+        # Chart 6 — ROI by Project Type
+        with _sc6:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                    'letter-spacing:.8px;margin-bottom:8px">Avg ROI % by Project Type</div>',
+                    unsafe_allow_html=True
+                )
+                if "proj_type" in _all_proj.columns and "roi_pct" in _all_proj.columns:
+                    _roi_df = _all_proj.copy()
+                    _roi_df["roi_n"] = pd.to_numeric(_roi_df["roi_pct"], errors="coerce")
+                    _roi_grp = (
+                        _roi_df.dropna(subset=["roi_n"])
+                        .groupby("proj_type")["roi_n"]
+                        .mean().reset_index()
+                        .sort_values("roi_n", ascending=False)
+                    )
+                    if not _roi_grp.empty:
+                        _roi_colors = {"RPA":"#3F8E91","AI Agent":"#8B5CF6","Presales":"#F59E0B"}
+                        _roi_bar_colors = [_roi_colors.get(t, "#94A3B8") for t in _roi_grp["proj_type"]]
+                        _roi_fig = go.Figure(go.Bar(
+                            x=_roi_grp["proj_type"],
+                            y=_roi_grp["roi_n"].round(1),
+                            marker=dict(color=_roi_bar_colors, opacity=0.9),
+                            text=_roi_grp["roi_n"].round(1).astype(str) + "%",
+                            textposition="outside",
+                            textfont=dict(size=11),
+                        ))
+                        _roi_fig.update_layout(
+                            margin=dict(t=20, b=20, l=20, r=10), height=240,
+                            xaxis=dict(tickfont=dict(size=11)),
+                            yaxis=dict(tickfont=dict(size=10), gridcolor="#F1F5F9",
+                                       ticksuffix="%"),
+                            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                            showlegend=False,
+                        )
+                        st.plotly_chart(_roi_fig, use_container_width=True)
+                    else:
+                        st.info("Add ROI % values in the Projects tab to see this chart.")
+                else:
+                    st.info("No ROI data available.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    if role != "sales":
+        # ══════════════════════════════════════════════════════════════════════
+        # NON-SALES — STATIC MARKETING INTELLIGENCE CARDS
+        # ══════════════════════════════════════════════════════════════════════
+
+        # ════════════════════════════════════════════════════════════════════
+        # MARKETING INTELLIGENCE — INDUSTRIES, USPs, TECH STACK, ENGAGEMENT
+        # ════════════════════════════════════════════════════════════════════
+        st.markdown(
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
+        '<span style="font-size:14px;font-weight:800;color:#1F3B4D">Marketing Intelligence</span>'
+        '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+        'background:#FFF7ED;color:#EA580C;border:1px solid #FED7AA">Go-to-Market</span>'
+        '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+        'background:#F0FDF4;color:#16A34A;border:1px solid #BBF7D0">Qualesce India</span>'
+        '</div>',
+        unsafe_allow_html=True
+        )
+
+        _mkt_c1, _mkt_c2 = st.columns(2)
+
+        with _mkt_c1:
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                'letter-spacing:.8px;margin-bottom:12px">Industries We Serve</div>',
+                unsafe_allow_html=True
+            )
+            _industries = [
+                ("💰", "BFSI",              "Banking, Financial Services & Insurance", "#3B82F6",
+                 "Automating loan processing, compliance reporting, reconciliation & fraud detection."),
+                ("🏥", "Healthcare",        "Pharma & Life Sciences",                  "#10B981",
+                 "Streamlining claims, patient onboarding, regulatory submissions & lab data pipelines."),
+                ("🏭", "Manufacturing",     "Production & Supply Chain",               "#F59E0B",
+                 "Digitising shop-floor reports, inventory sync, quality checks & supplier workflows."),
+                ("🛒", "Retail & FMCG",     "Consumer & Distribution",                 "#8B5CF6",
+                 "Automating order management, demand forecasting, invoice processing & reconciliation."),
+            ]
+            _ind_html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+            for _iico, _iname, _isub, _iclr, _idesc in _industries:
+                _ind_html += (
+                    f'<div style="background:linear-gradient(135deg,{_iclr}12,{_iclr}06);'
+                    f'border:1.5px solid {_iclr}40;border-radius:12px;padding:14px 16px">'
+                    f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+                    f'<span style="font-size:20px">{_iico}</span>'
+                    f'<div>'
+                    f'<div style="font-size:12px;font-weight:800;color:#1F3B4D">{_iname}</div>'
+                    f'<div style="font-size:9px;color:{_iclr};font-weight:600">{_isub}</div>'
+                    f'</div></div>'
+                    f'<div style="font-size:10px;color:#64748B;line-height:1.5">{_idesc}</div>'
+                    f'</div>'
+                )
+            _ind_html += '</div>'
+            st.markdown(_ind_html, unsafe_allow_html=True)
+
+        with _mkt_c2:
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                'letter-spacing:.8px;margin-bottom:12px">Why Choose Qualesce</div>',
+                unsafe_allow_html=True
+            )
+            _usps = [
+                ("⚡", "Rapid Time-to-Value",  "#F59E0B",
+                 "Live in weeks, not months — phased delivery from discovery to production."),
+                ("🎯", "End-to-End Ownership", "#3B82F6",
+                 "Single partner for design, build, deploy & support — zero handoff risk."),
+                ("🔓", "Platform Agnostic",    "#8B5CF6",
+                 "UiPath, Power Automate, Python bots — best-fit technology for your stack."),
+                ("📈", "Proven ROI",           "#10B981",
+                 "412%+ average portfolio ROI with measurable cost savings from day one."),
+            ]
+            _usp_html = '<div style="display:flex;flex-direction:column;gap:10px">'
+            for _uico, _utitle, _uclr, _udesc in _usps:
+                _usp_html += (
+                    f'<div style="display:flex;align-items:flex-start;gap:12px;padding:12px 14px;'
+                    f'background:#fff;border:1.5px solid {_uclr}30;border-radius:10px;'
+                    f'border-left:4px solid {_uclr}">'
+                    f'<span style="font-size:22px;line-height:1.2">{_uico}</span>'
+                    f'<div>'
+                    f'<div style="font-size:12px;font-weight:800;color:#1F3B4D;margin-bottom:3px">{_utitle}</div>'
+                    f'<div style="font-size:10px;color:#64748B;line-height:1.5">{_udesc}</div>'
+                    f'</div></div>'
+                )
+            _usp_html += '</div>'
+            st.markdown(_usp_html, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        _mkt_c3, _mkt_c4 = st.columns([1.2, 1])
+
+        with _mkt_c3:
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                'letter-spacing:.8px;margin-bottom:12px">Technology Stack &amp; Partners</div>',
+                unsafe_allow_html=True
+            )
+            _tech_groups = [
+                ("RPA Platforms",  [("UiPath","#F6511D"),("Power Automate","#0078D4"),
+                                    ("Blue Prism","#5A48A5"),("Automation Anywhere","#FF6D00")]),
+                ("AI &amp; LLM",   [("OpenAI GPT","#10A37F"),("LangChain","#1C3553"),
+                                    ("Azure OpenAI","#0078D4"),("Hugging Face","#F5A623")]),
+                ("Infrastructure", [("Azure","#0078D4"),("AWS","#FF9900"),
+                                    ("Docker","#2496ED"),("Python","#3776AB")]),
+            ]
+            for _tgrp, _techs in _tech_groups:
+                _tg_html = (
+                    f'<div style="margin-bottom:14px">'
+                    f'<div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:7px">{_tgrp}</div>'
+                    f'<div style="display:flex;flex-wrap:wrap;gap:6px">'
+                )
+                for _tn, _tc in _techs:
+                    _tg_html += (
+                        f'<span style="font-size:10px;font-weight:700;padding:4px 12px;border-radius:20px;'
+                        f'background:{_tc}18;color:{_tc};border:1.5px solid {_tc}50">{_tn}</span>'
+                    )
+                _tg_html += '</div></div>'
+                st.markdown(_tg_html, unsafe_allow_html=True)
+
+        with _mkt_c4:
+            st.markdown(
+                '<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;'
+                'letter-spacing:.8px;margin-bottom:12px">Engagement Models</div>',
+                unsafe_allow_html=True
+            )
+            _eng_models = [
+                ("🎯", "Fixed-Price Projects",  "#3B82F6", "Most Popular",
+                 "Defined scope, timeline & cost — ideal for new automation implementations."),
+                ("🔄", "Managed Support & R&M", "#8B5CF6", "Recurring Revenue",
+                 "Monthly retainer for ongoing bot maintenance, monitoring & enhancements."),
+                ("📦", "License + Consulting",  "#F59E0B", "High Value",
+                 "Vendor license procurement bundled with implementation & training services."),
+            ]
+            for _eico, _ename, _ec, _ebadge, _edesc in _eng_models:
+                st.markdown(
+                    f'<div style="padding:14px 16px;background:linear-gradient(135deg,{_ec}08,{_ec}04);'
+                    f'border:1.5px solid {_ec}35;border-radius:12px;margin-bottom:10px">'
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
+                    f'<div style="display:flex;align-items:center;gap:8px">'
+                    f'<span style="font-size:18px">{_eico}</span>'
+                    f'<span style="font-size:12px;font-weight:800;color:#1F3B4D">{_ename}</span>'
+                    f'</div>'
+                    f'<span style="font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;'
+                    f'background:{_ec}20;color:{_ec};border:1px solid {_ec}40">{_ebadge}</span>'
+                    f'</div>'
+                    f'<div style="font-size:10px;color:#64748B;line-height:1.5">{_edesc}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Key Achievements Banner
+        st.markdown(
+            '<div style="background:linear-gradient(135deg,#1E1B4B 0%,#312E81 50%,#1E1B4B 100%);'
+            'border-radius:14px;padding:20px 28px;margin-bottom:16px">'
+            '<div style="font-size:10px;font-weight:700;color:#A5B4FC;text-transform:uppercase;'
+            'letter-spacing:1px;margin-bottom:14px">Qualesce — Key Achievements &amp; Recognitions</div>'
+            '<div style="display:flex;gap:24px;flex-wrap:wrap;justify-content:space-between">'
+
+            '<div style="text-align:center;min-width:80px">'
+            '<div style="font-size:26px;font-weight:900;color:#818CF8;line-height:1">7+</div>'
+            '<div style="font-size:10px;color:#C7D2FE;margin-top:3px">Years in RPA</div>'
+            '</div>'
+
+            '<div style="text-align:center;min-width:80px">'
+            '<div style="font-size:26px;font-weight:900;color:#34D399;line-height:1">100+</div>'
+            '<div style="font-size:10px;color:#C7D2FE;margin-top:3px">Bots Deployed</div>'
+            '</div>'
+
+            '<div style="text-align:center;min-width:80px">'
+            '<div style="font-size:26px;font-weight:900;color:#FCD34D;line-height:1">₹50Cr+</div>'
+            '<div style="font-size:10px;color:#C7D2FE;margin-top:3px">Client Value Created</div>'
+            '</div>'
+
+            '<div style="text-align:center;min-width:80px">'
+            '<div style="font-size:26px;font-weight:900;color:#F472B6;line-height:1">98%</div>'
+            '<div style="font-size:10px;color:#C7D2FE;margin-top:3px">Client Retention</div>'
+            '</div>'
+
+            '<div style="text-align:center;min-width:80px">'
+            '<div style="font-size:26px;font-weight:900;color:#38BDF8;line-height:1">UiPath</div>'
+            '<div style="font-size:10px;color:#C7D2FE;margin-top:3px">Gold Partner</div>'
+            '</div>'
+
+            '<div style="text-align:center;min-width:80px">'
+            '<div style="font-size:26px;font-weight:900;color:#A3E635;line-height:1">ISO</div>'
+            '<div style="font-size:10px;color:#C7D2FE;margin-top:3px">27001 Aligned</div>'
+            '</div>'
+
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        st.markdown(
+        '<h3 style="font-size:15px;font-weight:700;color:#1F3B4D;margin:0 0 10px;letter-spacing:-.2px">'
         'Project Type Breakdown</h3>',
         unsafe_allow_html=True
     )
@@ -2094,7 +3380,7 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                 _bar_fig = go.Figure(go.Bar(
                     x=_ccounts["count"], y=_ccounts["client"],
                     orientation="h",
-                    marker=dict(color="#3B82F6", opacity=0.85),
+                    marker=dict(color="#5FA9AB", opacity=0.85),
                     text=_ccounts["count"], textposition="outside",
                     textfont=dict(size=10),
                 ))
@@ -2113,7 +3399,7 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(
         '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
-        '<span style="font-size:14px;font-weight:800;color:#0F172A">Sales Perspective</span>'
+        '<span style="font-size:14px;font-weight:800;color:#1F3B4D">Sales Perspective</span>'
         '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
         'background:#0EA5E920;color:#0EA5E9;border:1px solid #0EA5E940">Deals &amp; Conversion</span>'
         '</div>',
@@ -2161,7 +3447,7 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
         (_sk2, "POC Active",  len(_sp_poc),        "#8B5CF6", "🔬"),
         (_sk3, "In Deals", _sp_pipeline,        "#F59E0B", "📋"),
         (_sk4, "Win Rate",    f"{_sp_win_rate}%",  "#10B981", "🏆"),
-        (_sk5, "At Risk",     _sp_at_risk_count,   "#EF4444", "⚠️"),
+        (_sk5, "At Risk",     _sp_at_risk_count,   "#EF4444", "⚠ï¸"),
     ]
     for _sc, _sl, _sv, _scolor, _sico in _sales_kpi_data:
         _sc.markdown(
@@ -2247,6 +3533,174 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                 st.info("No client data available.")
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── CRM LEADS & OPPORTUNITIES DASHBOARD ──────────────────────────────────────
+    _crm_leads_dash = auth.get_all_leads()
+    _crm_opps_dash  = auth.get_all_opportunities()
+    _crm_acts_dash  = auth.get_all_activities()
+
+    if _crm_leads_dash or _crm_opps_dash:
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+            '<span style="font-size:14px;font-weight:800;color:#1F3B4D">CRM Pipeline</span>'
+            '<span style="font-size:10px;font-weight:600;padding:2px 10px;border-radius:20px;'
+            'background:#8B5CF620;color:#8B5CF6;border:1px solid #8B5CF640">Leads &amp; Opportunities</span>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        # CRM KPI row
+        _ck1, _ck2, _ck3, _ck4, _ck5 = st.columns(5)
+        _crm_total_leads  = len(_crm_leads_dash)
+        _crm_qual         = sum(1 for l in _crm_leads_dash if l["status"] in ("Qualified", "Proposal", "Negotiation"))
+        _crm_won          = sum(1 for l in _crm_leads_dash if l["status"] == "Won")
+        _crm_pipe_val     = sum(o["value"] for o in _crm_opps_dash if o["stage"] not in ("Closed Won", "Closed Lost"))
+        _crm_open_acts    = sum(1 for a in _crm_acts_dash if not a["is_done"])
+        _crm_kpis = [
+            (_ck1, "Total Leads",     _crm_total_leads,              "#0EA5E9", "👥"),
+            (_ck2, "Qualified",       _crm_qual,                     "#8B5CF6", "✅"),
+            (_ck3, "Pipeline Value",  f"₹{_crm_pipe_val:,.0f}",     "#F59E0B", "💰"),
+            (_ck4, "Won",             _crm_won,                      "#10B981", "🏆"),
+            (_ck5, "Open Activities", _crm_open_acts,                "#EF4444", "📋"),
+        ]
+        for _kc, _kl, _kv, _kcol, _kico in _crm_kpis:
+            _kc.markdown(
+                f'<div style="background:#F8FAFC;border:1.5px solid {_kcol}33;border-radius:12px;'
+                f'padding:14px 16px;text-align:center;border-top:3px solid {_kcol}">'
+                f'<div style="font-size:16px;margin-bottom:4px">{_kico}</div>'
+                f'<div style="font-size:22px;font-weight:800;color:{_kcol};line-height:1">{_kv}</div>'
+                f'<div style="font-size:11px;color:#64748B;margin-top:4px;font-weight:600">{_kl}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        _crm_left, _crm_right = st.columns(2)
+
+        # Lead status breakdown chart
+        with _crm_left:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                    'text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">'
+                    'Leads by Status</div>',
+                    unsafe_allow_html=True
+                )
+                _lead_status_counts = {}
+                for _l in _crm_leads_dash:
+                    _lead_status_counts[_l["status"]] = _lead_status_counts.get(_l["status"], 0) + 1
+                _lead_status_order = [s for s in auth.CRM_LEAD_STATUSES if s in _lead_status_counts]
+                if _lead_status_order:
+                    _lead_colors_map = {
+                        "New": "#0EA5E9", "Contacted": "#06B6D4", "Qualified": "#8B5CF6",
+                        "Proposal": "#F59E0B", "Negotiation": "#EF4444",
+                        "Won": "#10B981", "Lost": "#6B7280",
+                    }
+                    _ls_fig = go.Figure(go.Bar(
+                        x=_lead_status_order,
+                        y=[_lead_status_counts[s] for s in _lead_status_order],
+                        marker_color=[_lead_colors_map.get(s, "#94A3B8") for s in _lead_status_order],
+                        text=[_lead_status_counts[s] for s in _lead_status_order],
+                        textposition="outside",
+                    ))
+                    _ls_fig.update_layout(
+                        margin=dict(t=10, b=0, l=0, r=0), height=220,
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                        xaxis=dict(tickfont=dict(size=9)),
+                        yaxis=dict(visible=False),
+                        font=dict(size=10),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(_ls_fig, use_container_width=True)
+                else:
+                    st.info("No lead data.")
+
+        # Top open opportunities
+        with _crm_right:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                    'text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">'
+                    'Top Open Opportunities</div>',
+                    unsafe_allow_html=True
+                )
+                _open_opps = [o for o in _crm_opps_dash if o["stage"] not in ("Closed Won", "Closed Lost")]
+                _open_opps_sorted = sorted(_open_opps, key=lambda o: o["value"], reverse=True)[:6]
+                if _open_opps_sorted:
+                    _OPP_STAGE_DASH_COLORS = {
+                        "Prospecting": "#0EA5E9", "Qualification": "#06B6D4",
+                        "Proposal": "#F59E0B", "Negotiation": "#EF4444",
+                    }
+                    _oh_s = "font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;padding:3px 0;border-bottom:1px solid #E2E8F0"
+                    _op_hc = st.columns([4, 2, 2])
+                    _op_hc[0].markdown(f'<div style="{_oh_s}">Title</div>', unsafe_allow_html=True)
+                    _op_hc[1].markdown(f'<div style="{_oh_s}">Value</div>', unsafe_allow_html=True)
+                    _op_hc[2].markdown(f'<div style="{_oh_s}">Stage</div>', unsafe_allow_html=True)
+                    for _oo in _open_opps_sorted:
+                        _op_rc = st.columns([4, 2, 2])
+                        _oo_co_html = (f'<br><span style="font-size:9px;color:#94A3B8">{esc(_oo["company_name"])}</span>'
+                                       if _oo["company_name"] else "")
+                        _op_rc[0].markdown(
+                            f'<div style="font-size:11px;font-weight:600;color:#111827;padding:4px 0">'
+                            f'{esc(_oo["title"])}{_oo_co_html}</div>',
+                            unsafe_allow_html=True
+                        )
+                        _op_rc[1].markdown(
+                            f'<div style="font-size:12px;font-weight:700;color:#0F172A;padding:4px 0">₹{_oo["value"]:,.0f}</div>',
+                            unsafe_allow_html=True
+                        )
+                        _ost_color = _OPP_STAGE_DASH_COLORS.get(_oo["stage"], "#6B7280")
+                        _op_rc[2].markdown(
+                            f'<span style="font-size:9px;font-weight:700;background:{_ost_color}22;color:{_ost_color};'
+                            f'padding:2px 7px;border-radius:10px">{esc(_oo["stage"])}</span>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.info("No open opportunities.")
+
+        # Recent activities strip
+        if _crm_acts_dash:
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="font-size:9px;color:#94A3B8;font-weight:600;'
+                    'text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">'
+                    'Recent Activities</div>',
+                    unsafe_allow_html=True
+                )
+                _ACT_TYPE_COLS = {
+                    "Call": "#0EA5E9", "Email": "#8B5CF6", "Meeting": "#F59E0B",
+                    "Demo": "#10B981", "Follow-up": "#EF4444", "Other": "#6B7280",
+                }
+                _recent_acts = sorted(_crm_acts_dash, key=lambda a: a["activity_date"] or "", reverse=True)[:5]
+                _ra_h = st.columns([1.2, 3, 2.5, 1.5, 1.2])
+                for _rh, _rl in zip(_ra_h, ["Type", "Subject", "Lead / Opp", "Date", "Status"]):
+                    _rh.markdown(
+                        f'<div style="font-size:9px;font-weight:700;text-transform:uppercase;'
+                        f'color:#94A3B8;padding:3px 0;border-bottom:1px solid #E2E8F0">{_rl}</div>',
+                        unsafe_allow_html=True
+                    )
+                for _ra in _recent_acts:
+                    _ra_c = st.columns([1.2, 3, 2.5, 1.5, 1.2])
+                    _ratc = _ACT_TYPE_COLS.get(_ra["type"], "#6B7280")
+                    _ra_c[0].markdown(
+                        f'<span style="font-size:9px;font-weight:700;background:{_ratc}22;color:{_ratc};'
+                        f'padding:2px 6px;border-radius:8px">{esc(_ra["type"])}</span>',
+                        unsafe_allow_html=True
+                    )
+                    _ra_c[1].markdown(f'<span style="font-size:11px;color:#111827">{esc(_ra["subject"])}</span>', unsafe_allow_html=True)
+                    _ra_ref = " / ".join(filter(None, [_ra["company_name"], _ra["opportunity_title"]]))
+                    _ra_c[2].markdown(f'<span style="font-size:10px;color:#64748B">{esc(_ra_ref) if _ra_ref else "—"}</span>', unsafe_allow_html=True)
+                    _ra_c[3].markdown(f'<span style="font-size:10px;color:#64748B">{esc(fmt_date(_ra["activity_date"])) if _ra["activity_date"] else "—"}</span>', unsafe_allow_html=True)
+                    _done_c = "#10B981" if _ra["is_done"] else "#F59E0B"
+                    _done_t = "Done" if _ra["is_done"] else "Pending"
+                    _ra_c[4].markdown(
+                        f'<span style="font-size:9px;font-weight:700;background:{_done_c}22;color:{_done_c};'
+                        f'padding:2px 6px;border-radius:8px">{_done_t}</span>',
+                        unsafe_allow_html=True
+                    )
+
+        st.markdown("<br>", unsafe_allow_html=True)
 
     # ── MONTHLY PROJECTS WON & ROI TREND ─────────────────────────────────────────
     with st.container(border=True):
@@ -2384,7 +3838,7 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
                     _hcolor, _hlabel = "#EF4444", "Weak"
                 _sc_html += (
                     f'<tr style="border-bottom:1px solid #F8FAFC">'
-                    f'<td style="font-size:11px;font-weight:700;color:#0F172A;padding:7px 8px">{_sc_client}</td>'
+                    f'<td style="font-size:11px;font-weight:700;color:#1F3B4D;padding:7px 8px">{_sc_client}</td>'
                     f'<td style="text-align:center;padding:7px 8px">'
                     f'<span style="font-size:12px;font-weight:800;color:#3B82F6">{_c_active}</span></td>'
                     f'<td style="text-align:center;padding:7px 8px">'
@@ -2459,148 +3913,161 @@ if st.session_state.active_tab == "dashboard" and role not in ("employee",):
             else:
                 st.info("Add hours_saved or cost_saved data in the Projects tab to see top performers.")
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    if role not in ("sales",):
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── PROJECT DETAIL PANEL (always visible; slicer narrows the view) ───────────
-    _detail_key = st.session_state.dash_slicer
-
-    if _detail_key is not None:
-        key = _detail_key
-        if key == "__active_dev__":
-            _ad_mask = dash_df["status"].isin({"In Progress"})
-            if "is_active" in dash_df.columns:
-                _ad_mask = _ad_mask & (
-                    ~dash_df["is_active"].astype(str).str.strip().str.lower().isin(["false","0","no"])
-                )
-            sliced, slicer_label = dash_df[_ad_mask], "Active Development"
-        elif key == "__new__":
-            new_mask = dash_df["is_new"].astype(str).str.lower().isin(["true","1","yes"]) if "is_new" in dash_df.columns else pd.Series([False]*len(dash_df))
-            sliced, slicer_label = dash_df[new_mask], "New Added"
-        elif key == "POC":
-            sliced, slicer_label = dash_df[dash_df["status"].str.contains("POC", na=False)], "POC (Internal + External)"
-        else:
-            sliced, slicer_label = dash_df[dash_df["status"].str.contains(key, na=False)], key
-
-        # For Development-related slicers, show only active projects
-        _dev_keys = {"In Progress", "PDD", "Important"}
-        if key in _dev_keys and "is_active" in sliced.columns:
-            sliced = sliced[~sliced["is_active"].astype(str).str.strip().str.lower().isin(["false","0","no"])]
-    else:
-        # No slicer active — show all projects for the current client filter
-        sliced = dash_df
-        _cl = st.session_state.dash_client_filter
-        slicer_label = f"All — {_cl}" if _cl != "All" else "All Projects"
-
-    # Build team map
-    emp_map = {}
-    for _, row in sliced.iterrows():
-        for n in str(row.get("employee","")).replace("&",",").split(","):
-            n = n.strip()
-            if not n: continue
-            if n not in emp_map: emp_map[n] = {"projects":[], "clients":set()}
-            emp_map[n]["projects"].append(row["name"])
-            emp_map[n]["clients"].add(str(row.get("client","")))
-    team_list = sorted(emp_map.items(), key=lambda x: -len(x[1]["projects"]))
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    hc1, hc2 = st.columns([5, 1])
-    _style_key = _detail_key if _detail_key not in [None, "__new__", "POC", "__active_dev__"] else (
-        "In Progress" if _detail_key == "__active_dev__" else
-        "Completed"   if _detail_key == "__new__"        else
-        "Internal POC" if _detail_key == "POC"           else "R&M"
-    )
-    hc1.markdown(f"""
-    <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;
-      background:#fff;border:1px solid #E2E8F0;border-radius:10px">
-      {badge_html(slicer_label if slicer_label in STATUS_STYLES else "R&M")}
-      <span style="color:#64748B;font-size:12px;font-weight:500">
-        <b style="color:#0F172A">{len(sliced)}</b> projects &nbsp;·&nbsp;
-        <b style="color:#0F172A">{len(team_list)}</b> team members assigned
-        &nbsp;·&nbsp; <b style="color:#64748B">{slicer_label}</b></span>
-    </div>""".strip(), unsafe_allow_html=True)
-    if _detail_key is not None:
-        if hc2.button("Clear Slicer", use_container_width=True, key="clear_slicer"):
-            st.session_state.dash_slicer = None
+        # ── STATUS FILTER (segmented control above project list) ──────────────
+        _seg_base = ["All", "In Progress", "Completed", "R&M", "UAT", "POC"]
+        _seg_counts = {}
+        for _s in _seg_base:
+            if _s == "All":
+                _seg_counts[_s] = len(dash_df)
+            elif _s == "POC":
+                _seg_counts[_s] = int(dash_df["status"].str.contains("POC", na=False).sum()) if "status" in dash_df.columns else 0
+            elif _s == "R&M":
+                _seg_counts[_s] = int(dash_df["status"].str.contains("R&M|Maintenance", na=False).sum()) if "status" in dash_df.columns else 0
+            else:
+                _seg_counts[_s] = int(dash_df["status"].str.contains(_s, na=False).sum()) if "status" in dash_df.columns else 0
+        _seg_labels = [f"{_s}  ({_seg_counts[_s]})" for _s in _seg_base]
+        _cur_label = "All" if st.session_state.dash_slicer is None else st.session_state.dash_slicer
+        _cur_seg_label = next((l for l in _seg_labels if l.startswith(_cur_label)), _seg_labels[0])
+        _sel_seg = st.radio("Filter", _seg_labels, index=_seg_labels.index(_cur_seg_label),
+                            horizontal=True, label_visibility="collapsed", key="dash_seg_radio")
+        _sel_seg_base = _sel_seg.split("  (")[0].strip()
+        _new_slicer = None if _sel_seg_base == "All" else _sel_seg_base
+        if _new_slicer != st.session_state.dash_slicer:
+            st.session_state.dash_slicer = _new_slicer
             st.rerun()
 
-    pl, pr = st.columns([1.6, 1])
+        # ── PROJECT DETAIL PANEL (slicer narrows the view) ───────────────────
+        _detail_key = st.session_state.dash_slicer
 
-    # ── Project detail cards ──────────────────────────────────────────────
-    with pl:
-        with st.container(border=True):
-            st.markdown(f'<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;letter-spacing:.8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0">Project Details — {len(sliced)} records</div>', unsafe_allow_html=True)
-            if sliced.empty:
-                st.info("No projects in this category.")
-            else:
-                for i, (_, row) in enumerate(sliced.iterrows()):
-                    roi_badge  = ""
-                    if str(row.get("roi_pct","")).strip():
-                        roi_badge = f'<span style="font-size:10px;background:#064E3B;color:#10B981;border-radius:4px;padding:2px 8px;font-weight:800;margin-left:6px">ROI {esc(str(row["roi_pct"]))}%</span>'
-                    new_badge  = '<span style="font-size:9px;background:#10B981;color:#fff;border-radius:4px;padding:1px 5px;font-weight:800;margin-left:4px">NEW</span>' if is_new(row) else ""
-                    _lead      = esc(str(row.get("lead","")).strip())
-                    _start     = esc(fmt_date(str(row.get("start",""))))
-                    _end       = esc(fmt_date(str(row.get("end",""))) or "Ongoing")
-                    _due_raw   = str(row.get("due_date","")).strip()
-                    _po        = esc(str(row.get("po","")))
-                    _desc      = esc(str(row.get("desc","")))
-
-                    meta_spans = [f'<span>{esc(str(row.get("client","")))} </span>']
-                    if _lead:
-                        meta_spans.append(f'<span>Lead: <b style="color:#2563EB">{_lead}</b></span>')
-                    meta_spans.append(f'<span>{esc(str(row.get("employee","")))} </span>')
-                    if _start:
-                        meta_spans.append(f'<span>{_start} to {_end}</span>')
-                    if _due_raw:
-                        _due_d = _parse_dmy(_due_raw)
-                        _due_color = "#DC2626" if (_due_d and (_due_d - date.today()).days < 0) else "#92400E" if (_due_d and (_due_d - date.today()).days <= 7) else "#64748B"
-                        meta_spans.append(f'<span>Due: <b style="color:{_due_color}">{esc(fmt_date(_due_raw))}</b></span>')
-                    if _po:
-                        meta_spans.append(f'<span>PO #{_po}</span>')
-                    meta_html = "".join(meta_spans)
-                    desc_html = f'<div style="font-size:10px;color:#64748B;font-style:italic">{_desc}</div>' if _desc else ""
-                    row_bg    = "#fff" if i % 2 == 0 else "#F8FAFC"
-
-                    st.markdown(
-                        f'<div class="srow" style="background:{row_bg}">'
-                        f'<div style="flex:1">'
-                        f'<div style="font-size:12px;font-weight:700;color:#111827;margin-bottom:4px">{esc(str(row.get("name","")))}{new_badge}</div>'
-                        f'<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:10px;color:#64748B;margin-bottom:3px">{meta_html}</div>'
-                        f'{desc_html}{roi_badge}'
-                        f'</div>'
-                        f'<div style="flex-shrink:0;margin-left:10px">{badge_html(str(row.get("status","")))}</div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
+        if _detail_key is not None:
+            key = _detail_key
+            if key == "__active_dev__":
+                _ad_mask = dash_df["status"].isin({"In Progress"})
+                if "is_active" in dash_df.columns:
+                    _ad_mask = _ad_mask & (
+                        ~dash_df["is_active"].astype(str).str.strip().str.lower().isin(["false","0","no"])
                     )
-
-    # ── Team panel ────────────────────────────────────────────────────────
-    AVATAR_COLS = [("#1E3A8A","#3B82F6"),("#451A03","#F59E0B"),("#064E3B","#10B981"),
-                   ("#1E1B4B","#8B5CF6"),("#7F1D1D","#EF4444"),("#0C4A6E","#06B6D4"),
-                   ("#78350F","#F97316"),("#500724","#EC4899")]
-    with pr:
-        with st.container(border=True):
-            st.markdown('<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;letter-spacing:.8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0">Team Responsible</div>', unsafe_allow_html=True)
-            if not team_list:
-                st.info("No team members.")
+                sliced, slicer_label = dash_df[_ad_mask], "Active Development"
+            elif key == "__new__":
+                new_mask = dash_df["is_new"].astype(str).str.lower().isin(["true","1","yes"]) if "is_new" in dash_df.columns else pd.Series([False]*len(dash_df))
+                sliced, slicer_label = dash_df[new_mask], "New Added"
+            elif key == "POC":
+                sliced, slicer_label = dash_df[dash_df["status"].str.contains("POC", na=False)], "POC (Internal + External)"
             else:
-                for i, (name, info) in enumerate(team_list):
-                    bg_c, ac = AVATAR_COLS[i % len(AVATAR_COLS)]
-                    clients_str = " · ".join(esc(c) for c in sorted(info["clients"]))
-                    st.markdown(f"""
-                    <div style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid #F1F5F9">
-                      <div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;
-                        background:linear-gradient(135deg,{bg_c},{ac}44);border:1px solid {ac}55;
-                        display:flex;align-items:center;justify-content:center;
-                        font-size:14px;font-weight:800;color:{ac}">{esc(name[0].upper())}</div>
-                      <div style="flex:1;min-width:0">
-                        <div style="font-size:13px;font-weight:700;color:#111827">{esc(name)}</div>
-                        <div style="font-size:10px;color:#64748B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-                          {clients_str}</div>
-                      </div>
-                      <div style="width:26px;height:26px;border-radius:7px;flex-shrink:0;
-                        background:{ac}22;border:1px solid {ac}44;display:flex;align-items:center;
-                        justify-content:center;font-size:13px;font-weight:800;color:{ac};
-                        font-family:'JetBrains Mono',monospace">{len(info["projects"])}</div>
-                    </div>""".strip(), unsafe_allow_html=True)
+                sliced, slicer_label = dash_df[dash_df["status"].str.contains(key, na=False)], key
+            _dev_keys = {"In Progress", "PDD", "Important"}
+            if key in _dev_keys and "is_active" in sliced.columns:
+                sliced = sliced[~sliced["is_active"].astype(str).str.strip().str.lower().isin(["false","0","no"])]
+        else:
+            sliced = dash_df
+            _cl = st.session_state.dash_client_filter
+            slicer_label = f"All — {_cl}" if _cl != "All" else "All Projects"
+
+        emp_map = {}
+        for _, row in sliced.iterrows():
+            for n in str(row.get("employee","")).replace("&",",").split(","):
+                n = n.strip()
+                if not n: continue
+                if n not in emp_map: emp_map[n] = {"projects":[], "clients":set()}
+                emp_map[n]["projects"].append(row["name"])
+                emp_map[n]["clients"].add(str(row.get("client","")))
+        team_list = sorted(emp_map.items(), key=lambda x: -len(x[1]["projects"]))
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        hc1, hc2 = st.columns([5, 1])
+        _style_key = _detail_key if _detail_key not in [None, "__new__", "POC", "__active_dev__"] else (
+            "In Progress" if _detail_key == "__active_dev__" else
+            "Completed"   if _detail_key == "__new__"        else
+            "Internal POC" if _detail_key == "POC"           else "R&M"
+        )
+        hc1.markdown(f"""
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;
+          background:#fff;border:1px solid #E2E8F0;border-radius:10px">
+          {badge_html(slicer_label if slicer_label in STATUS_STYLES else "R&M")}
+          <span style="color:#64748B;font-size:12px;font-weight:500">
+            <b style="color:#1F3B4D">{len(sliced)}</b> projects &nbsp;·&nbsp;
+            <b style="color:#1F3B4D">{len(team_list)}</b> team members assigned
+            &nbsp;·&nbsp; <b style="color:#64748B">{slicer_label}</b></span>
+        </div>""".strip(), unsafe_allow_html=True)
+
+        pl, pr = st.columns([1.6, 1])
+
+        with pl:
+            with st.container(border=True):
+                st.markdown(f'<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;letter-spacing:.8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0">Project Details — {len(sliced)} records</div>', unsafe_allow_html=True)
+                if sliced.empty:
+                    st.info("No projects in this category.")
+                else:
+                    for i, (_, row) in enumerate(sliced.iterrows()):
+                        roi_badge  = ""
+                        if str(row.get("roi_pct","")).strip():
+                            roi_badge = f'<span style="font-size:10px;background:#064E3B;color:#10B981;border-radius:4px;padding:2px 8px;font-weight:800;margin-left:6px">ROI {esc(str(row["roi_pct"]))}%</span>'
+                        new_badge  = '<span style="font-size:9px;background:#10B981;color:#fff;border-radius:4px;padding:1px 5px;font-weight:800;margin-left:4px">NEW</span>' if is_new(row) else ""
+                        _lead      = esc(str(row.get("lead","")).strip())
+                        _start     = esc(fmt_date(str(row.get("start",""))))
+                        _end       = esc(fmt_date(str(row.get("end",""))) or "Ongoing")
+                        _due_raw   = str(row.get("due_date","")).strip()
+                        _po        = esc(str(row.get("po","")))
+                        _desc      = esc(str(row.get("desc","")))
+                        meta_spans = [f'<span>{esc(str(row.get("client","")))} </span>']
+                        if _lead:
+                            meta_spans.append(f'<span>Lead: <b style="color:#3F8E91">{_lead}</b></span>')
+                        meta_spans.append(f'<span>{esc(str(row.get("employee","")))} </span>')
+                        if _start:
+                            meta_spans.append(f'<span>{_start} to {_end}</span>')
+                        if _due_raw:
+                            _due_d = _parse_dmy(_due_raw)
+                            _due_color = "#DC2626" if (_due_d and (_due_d - date.today()).days < 0) else "#92400E" if (_due_d and (_due_d - date.today()).days <= 7) else "#64748B"
+                            meta_spans.append(f'<span>Due: <b style="color:{_due_color}">{esc(fmt_date(_due_raw))}</b></span>')
+                        if _po:
+                            meta_spans.append(f'<span>PO #{_po}</span>')
+                        meta_html = "".join(meta_spans)
+                        desc_html = f'<div style="font-size:10px;color:#64748B;font-style:italic">{_desc}</div>' if _desc else ""
+                        row_bg    = "#fff" if i % 2 == 0 else "#F8FAFC"
+                        st.markdown(
+                            f'<div class="srow" style="background:{row_bg}">'
+                            f'<div style="flex:1">'
+                            f'<div style="font-size:12px;font-weight:700;color:#111827;margin-bottom:4px">{esc(str(row.get("name","")))}{new_badge}</div>'
+                            f'<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:10px;color:#64748B;margin-bottom:3px">{meta_html}</div>'
+                            f'{desc_html}{roi_badge}'
+                            f'</div>'
+                            f'<div style="flex-shrink:0;margin-left:10px">{badge_html(str(row.get("status","")))}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+        AVATAR_COLS = [("#1E3A8A","#3B82F6"),("#451A03","#F59E0B"),("#064E3B","#10B981"),
+                       ("#1E1B4B","#8B5CF6"),("#7F1D1D","#EF4444"),("#0C4A6E","#06B6D4"),
+                       ("#78350F","#F97316"),("#500724","#EC4899")]
+        with pr:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:9px;color:#94A3B8;font-weight:600;text-transform:uppercase;letter-spacing:.8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0">Team Responsible</div>', unsafe_allow_html=True)
+                if not team_list:
+                    st.info("No team members.")
+                else:
+                    for i, (name, info) in enumerate(team_list):
+                        bg_c, ac = AVATAR_COLS[i % len(AVATAR_COLS)]
+                        clients_str = " · ".join(esc(c) for c in sorted(info["clients"]))
+                        st.markdown(f"""
+                        <div style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid #F1F5F9">
+                          <div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;
+                            background:linear-gradient(135deg,{bg_c},{ac}44);border:1px solid {ac}55;
+                            display:flex;align-items:center;justify-content:center;
+                            font-size:14px;font-weight:800;color:{ac}">{esc(name[0].upper())}</div>
+                          <div style="flex:1;min-width:0">
+                            <div style="font-size:13px;font-weight:700;color:#111827">{esc(name)}</div>
+                            <div style="font-size:10px;color:#64748B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                              {clients_str}</div>
+                          </div>
+                          <div style="width:26px;height:26px;border-radius:7px;flex-shrink:0;
+                            background:{ac}22;border:1px solid {ac}44;display:flex;align-items:center;
+                            justify-content:center;font-size:13px;font-weight:800;color:{ac};
+                            font-family:'JetBrains Mono',monospace">{len(info["projects"])}</div>
+                        </div>""".strip(), unsafe_allow_html=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: PROJECTS
@@ -2622,7 +4089,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
         with _ttl_col:
             st.markdown(
                 '<div style="display:flex;align-items:center;gap:10px;margin-bottom:2px">'
-                '<span style="font-size:16px;font-weight:800;color:#0F172A">Project Tracker</span>'
+                '<span style="font-size:16px;font-weight:800;color:#1F3B4D">Project Tracker</span>'
                 '<span style="font-size:11px;font-weight:600;padding:3px 12px;border-radius:20px;'
                 'background:#8B5CF620;color:#7C3AED;border:1px solid #8B5CF640">'
                 + esc(_trk_sel) + '</span>'
@@ -2658,7 +4125,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                         '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
                         '<div style="width:10px;height:10px;border-radius:50%;background:'
                         + _trk_color + ';box-shadow:0 0 6px ' + _trk_color + '40"></div>'
-                        '<span style="font-size:13px;font-weight:800;color:#0F172A">'
+                        '<span style="font-size:13px;font-weight:800;color:#1F3B4D">'
                         + esc(_trk_sel) + '</span></div>',
                         unsafe_allow_html=True
                     )
@@ -2751,9 +4218,9 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                         )
                     if _trk_cost not in ("", "—", "0", "0.0"):
                         _roi_html += (
-                            '<div style="flex:1;background:#EFF6FF;border-radius:10px;'
-                            'padding:12px 14px;border-top:3px solid #3B82F6;text-align:center">'
-                            '<div style="font-size:18px;font-weight:900;color:#1D4ED8">'
+                            '<div style="flex:1;background:#EFF7F7;border-radius:10px;'
+                            'padding:12px 14px;border-top:3px solid #5FA9AB;text-align:center">'
+                            '<div style="font-size:18px;font-weight:900;color:#3F8E91">'
                             + chr(8377) + _trk_cost + '</div>'
                             '<div style="font-size:10px;color:#1E40AF;margin-top:3px">Cost Saved</div></div>'
                         )
@@ -2793,7 +4260,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                                 f'<div style="background:{_cm_bg};border:1px solid #E2E8F0;'
                                 f'border-radius:8px;padding:9px 12px;margin-bottom:5px">'
                                 f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">'
-                                f'<span style="font-size:11px;font-weight:700;color:#1D4ED8">{esc(_cm["author"])}</span>'
+                                f'<span style="font-size:11px;font-weight:700;color:#3F8E91">{esc(_cm["author"])}</span>'
                                 f'<span style="font-size:10px;color:#94A3B8">{_cm["time"]}</span>'
                                 f'</div>'
                                 f'<div style="font-size:12px;color:#374151;line-height:1.5">{esc(_cm["text"])}</div>'
@@ -2896,7 +4363,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                     'display:flex;align-items:center;justify-content:center;'
                     'font-size:17px;font-weight:900;' + _ring + _anim + '">'
                     + _icon + '</div>'
-                    '<div style="font-size:10px;font-weight:700;color:#0F172A;'
+                    '<div style="font-size:10px;font-weight:700;color:#1F3B4D;'
                     'margin-top:7px;text-align:center;line-height:1.3;width:78px;word-break:break-word">'
                     + _ph["label"] + '</div>'
                     '<div style="font-size:8.5px;font-weight:600;color:' + _cs["lbl_c"] + ';'
@@ -3002,9 +4469,9 @@ elif st.session_state.active_tab == "projects" and role != "employee":
 
     # ── Helper: render a project table for a given filtered DataFrame ──────────
     _ROW_BG = {
-        "Important": "#FFF1F2",
-        "Completed": "#ECFDF5",
-        "R&M":       "#EFF6FF",
+        "Important": "#FCEAEA",
+        "Completed": "#E5F2EC",
+        "R&M":       "#EFF7F7",
     }
 
     def _render_project_table(filtered, tab_key=""):
@@ -3017,7 +4484,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
         is_admin = (role in ("admin", "lead", "manager"))
         can_edit = role in ("admin", "lead", "manager")
         # col 0 = name (clickable), col 1 = rest of data, col 2+ = actions
-        col_widths = [0.5, 2, 7.5, 0.4, 0.4] if is_admin else ([0.5, 2, 7.5, 0.4] if can_edit else [0.5, 2, 7.5])
+        col_widths = [0.5, 2, 7.5, 0.4, 0.4, 0.4] if is_admin else ([0.5, 2, 7.5, 0.4, 0.4] if can_edit else [0.5, 2, 7.5, 0.4])
 
         # Project name column: st.button styled as plain hyperlink text (no button box/border).
         # Styles are injected per-row via _row_cls so they don't bleed to other buttons.
@@ -3025,7 +4492,7 @@ elif st.session_state.active_tab == "projects" and role != "employee":
         # Helper: type badge
         def _type_badge(pt):
             if pt == "RPA":
-                return '<span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 6px;border-radius:4px;margin-left:4px">RPA</span>'
+                return '<span style="font-size:9px;font-weight:700;background:#D9ECEC;color:#3F8E91;padding:1px 6px;border-radius:4px;margin-left:4px">RPA</span>'
             if pt == "AI Agent":
                 return '<span style="font-size:9px;font-weight:700;background:#F3E8FF;color:#7C3AED;padding:1px 6px;border-radius:4px;margin-left:4px">AI</span>'
             return ""
@@ -3053,13 +4520,44 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             hcols[3].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
         if is_admin:
             hcols[4].markdown(f'<div style="{_HDR_STYLE}"></div>', unsafe_allow_html=True)
+        hcols[-1].markdown(f'<div style="{_HDR_STYLE}">📎</div>', unsafe_allow_html=True)
+
+        # ── Pre-compute all row CSS in ONE batch (avoids 1 st.markdown per row) ──
+        _css_parts = []
+        _btn_css = (
+            "background:transparent!important;border:none!important;box-shadow:none!important;"
+            "color:#3F8E91!important;font-size:12px!important;font-weight:400!important;"
+            "text-decoration:underline!important;text-align:left!important;"
+            "padding:7px 0!important;border-bottom:1px solid #F1F5F9!important;"
+            "word-break:break-word!important;line-height:1.4!important;"
+            "cursor:pointer!important;border-radius:0!important;width:100%!important"
+        )
+        for _, _prow in filtered.iterrows():
+            _rc = (f"pr-{tab_key}-{str(_prow.get('id',''))}"
+                   .replace(" ","_").replace(".","_"))
+            _bg = next((_ROW_BG[s] for s in _ROW_BG
+                        if s in str(_prow.get("status",""))), "#FFFFFF")
+            _sel = (f'[data-testid="stHorizontalBlock"]'
+                    f'>[data-testid="stVerticalBlock"]:has(.{_rc})')
+            _css_parts.append(
+                f'{_sel}{{background:{_bg}!important}}'
+                f'{_sel} [data-testid="stButton"]>button{{{_btn_css}}}'
+                f'{_sel} [data-testid="stButton"]>button:hover'
+                f'{{background:transparent!important;color:#3F8E91!important}}'
+            )
+        if _css_parts:
+            st.markdown(f"<style>{''.join(_css_parts)}</style>",
+                        unsafe_allow_html=True)
+
+        # Pre-load file counts in one filesystem scan
+        _file_counts = _get_file_counts_cached()
 
         # Data rows
         for _, row in filtered.iterrows():
             row_status = str(row.get("status",""))
             bg = next((_ROW_BG[s] for s in _ROW_BG if s in row_status), "#FFFFFF")
             lead_val = str(row.get("lead","")).strip()
-            lead_html = (f'<span style="font-size:11px;font-weight:600;color:#2563EB">{esc(lead_val)}</span>'
+            lead_html = (f'<span style="font-size:11px;font-weight:600;color:#3F8E91">{esc(lead_val)}</span>'
                          if lead_val else '<span style="font-size:11px;color:#CBD5E1">—</span>')
             raw_active = str(row.get("is_active","True")).strip().lower()
             active_html = (
@@ -3069,11 +4567,10 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             )
             rid   = str(row.get("id",""))
             pname = str(row.get("name",""))
-            new_tag = ' <span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 5px;border-radius:4px">NEW</span>' if is_new(row) else ""
+            new_tag = ' <span style="font-size:9px;font-weight:700;background:#D9ECEC;color:#3F8E91;padding:1px 5px;border-radius:4px">NEW</span>' if is_new(row) else ""
             type_badge = _type_badge(str(row.get("proj_type","")).strip())
-            # safe CSS class name for this row's background
             _row_cls = f"pr-{tab_key}-{rid}".replace(" ", "_").replace(".", "_")
-            rcols = st.columns(col_widths)
+            rcols = st.columns(col_widths, vertical_alignment="center")
 
             # ── Col 0: ID ─────────────────────────────────────────────────────
             rcols[0].markdown(
@@ -3082,25 +4579,9 @@ elif st.session_state.active_tab == "projects" and role != "employee":
                 unsafe_allow_html=True
             )
 
-            # ── Col 1: Project name — button styled as plain hyperlink text ────
+            # ── Col 1: Project name — marker span only (CSS already injected above) ──
             with rcols[1]:
-                st.markdown(
-                    f'<style>'
-                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}){{'
-                    f'background:{bg}!important}}'
-                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}) [data-testid="stButton"]>button{{'
-                    f'background:transparent!important;border:none!important;box-shadow:none!important;'
-                    f'color:#2563EB!important;font-size:12px!important;font-weight:400!important;'
-                    f'text-decoration:underline!important;text-align:left!important;'
-                    f'padding:7px 0!important;border-bottom:1px solid #F1F5F9!important;'
-                    f'word-break:break-word!important;line-height:1.4!important;'
-                    f'cursor:pointer!important;border-radius:0!important;width:100%!important}}'
-                    f'[data-testid="stHorizontalBlock"]>[data-testid="stVerticalBlock"]:has(.{_row_cls}) [data-testid="stButton"]>button:hover{{'
-                    f'background:transparent!important;color:#1D4ED8!important}}'
-                    f'</style>'
-                    f'<span class="{_row_cls}"></span>',
-                    unsafe_allow_html=True
-                )
+                st.markdown(f'<span class="{_row_cls}"></span>', unsafe_allow_html=True)
                 if st.button(pname, key=f"pname_{tab_key}_{rid}",
                              use_container_width=True):
                     st.session_state["proj_tracker_open"] = pname
@@ -3135,16 +4616,27 @@ elif st.session_state.active_tab == "projects" and role != "employee":
             )
             if can_edit:
                 with rcols[3]:
-                    st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                    st.markdown('<span class="proj-act-marker proj-edit-marker"></span>', unsafe_allow_html=True)
                     if st.button("✏", key=f"edit_{tab_key}_{rid}", help="Edit project", use_container_width=True):
                         st.session_state.show_modal = {"edit": row.to_dict()}
                         st.rerun()
             if is_admin:
                 with rcols[4]:
-                    st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                    st.markdown('<span class="proj-act-marker proj-del-marker"></span>', unsafe_allow_html=True)
                     if st.button("🗑", key=f"del_{tab_key}_{rid}", help="Delete project", use_container_width=True):
                         st.session_state.confirm_delete = {"id": rid, "name": pname}
                         st.rerun()
+
+            with rcols[-1]:
+                st.markdown('<span class="proj-act-marker proj-files-marker"></span>', unsafe_allow_html=True)
+                _fc = _file_counts.get(_safe_folder(pname), 0)
+                _flabel = f"📎{_fc}" if _fc else "📎"
+                if st.button(_flabel, key=f"files_{tab_key}_{rid}",
+                             help="Upload / view project files",
+                             use_container_width=True):
+                    st.session_state.file_panel_proj = rid
+                    st.session_state.file_panel_name = pname
+                    st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
         csv = filtered.to_csv(index=False)
@@ -3169,47 +4661,52 @@ elif st.session_state.active_tab == "projects" and role != "employee":
 
     with tab_dev:
         dev_df   = df[df["status"].isin(_DEV_STATUSES)]
-        _render_project_table(_apply_filters(dev_df), tab_key="dev")
+        with st.container(border=True):
+            _render_project_table(_apply_filters(dev_df), tab_key="dev")
 
     with tab_rm:
         rm_df    = df[df["status"].isin(_RM_STATUSES)]
-        _render_project_table(_apply_filters(rm_df), tab_key="rm")
+        with st.container(border=True):
+            _render_project_table(_apply_filters(rm_df), tab_key="rm")
 
     with tab_completed:
         comp_df  = df[df["status"].isin(_COMPLETED_STATUSES)]
-        _render_project_table(_apply_filters(comp_df), tab_key="completed")
+        with st.container(border=True):
+            _render_project_table(_apply_filters(comp_df), tab_key="completed")
 
     with tab_uat:
         uat_df   = df[df["status"].isin(_UAT_STATUSES)]
-        _render_project_table(_apply_filters(uat_df), tab_key="uat")
+        with st.container(border=True):
+            _render_project_table(_apply_filters(uat_df), tab_key="uat")
 
     with tab_disc:
         disc_df  = df[df["status"].isin(_DISCONTINUED_STATUSES)]
-        _render_project_table(_apply_filters(disc_df), tab_key="discontinued")
+        with st.container(border=True):
+            _render_project_table(_apply_filters(disc_df), tab_key="discontinued")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: PRESALES
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "presales" and role not in ("employee",):
-    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">Presales / POC</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#1F3B4D;margin-bottom:4px;font-family:Manrope,sans-serif">Presales / POC</h2>', unsafe_allow_html=True)
     st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Presales pipeline and proof-of-concept projects</p>', unsafe_allow_html=True)
 
     _POC_DEFAULT = {"Presales", "Internal POC", "External POC"}
     _POC_CLIENTS = {"Internal POC", "External POC"}
 
     PS_ROW_BG = {
-        "Important":    "#FFF1F2",
-        "Presales":     "#F0F9FF",
-        "Internal POC": "#F5F3FF",
-        "External POC": "#FDF2F8",
-        "Completed":    "#ECFDF5",
-        "In Progress":  "#ECFEFF",
-        "Discontinued": "#FEF2F2",
+        "Important":    "#FCEAEA",
+        "Presales":     "#EFF7F7",
+        "Internal POC": "#EFF7F7",
+        "External POC": "#F7F8F9",
+        "Completed":    "#E5F2EC",
+        "In Progress":  "#EFF7F7",
+        "Discontinued": "#FCEAEA",
     }
 
     def _ps_type_badge(pt):
         if pt == "RPA":
-            return '<span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;padding:1px 6px;border-radius:4px">RPA</span>'
+            return '<span style="font-size:9px;font-weight:700;background:#D9ECEC;color:#3F8E91;padding:1px 6px;border-radius:4px">RPA</span>'
         if pt == "AI Agent":
             return '<span style="font-size:9px;font-weight:700;background:#F3E8FF;color:#7C3AED;padding:1px 6px;border-radius:4px">AI</span>'
         if pt == "Presales":
@@ -3247,10 +4744,10 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
         for _, _row in data.iterrows():
             _rstat = str(_row.get("status",""))
             _bg = next((PS_ROW_BG[s] for s in PS_ROW_BG if s in _rstat), "#FFFFFF")
-            _new_tag = (' <span style="font-size:9px;font-weight:700;background:#DBEAFE;color:#1D4ED8;'
+            _new_tag = (' <span style="font-size:9px;font-weight:700;background:#D9ECEC;color:#3F8E91;'
                         'padding:1px 5px;border-radius:4px">NEW</span>') if is_new(_row) else ""
             _lv = str(_row.get("lead","")).strip()
-            _lead_html = (f'<span style="font-size:11px;font-weight:600;color:#2563EB">{esc(_lv)}</span>'
+            _lead_html = (f'<span style="font-size:11px;font-weight:600;color:#3F8E91">{esc(_lv)}</span>'
                           if _lv else '<span style="font-size:11px;color:#CBD5E1">—</span>')
             _rid = str(_row.get("id",""))
             _inline_active = (st.session_state.poc_row_edit == _rid)
@@ -3312,7 +4809,7 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
                         st.session_state.poc_row_edit = None
                         st.session_state.toast = {"msg": "Comment saved!", "type": "success"}
                         st.rerun()
-                    if _b2.button("✏️", key=f"{tab_key}_full_edit_{_rid}", help="Full edit"):
+                    if _b2.button("✏", key=f"{tab_key}_full_edit_{_rid}", help="Full edit"):
                         st.session_state.poc_row_edit = None
                         st.session_state.show_modal = {"edit": _row.to_dict()}
                         st.rerun()
@@ -3415,27 +4912,30 @@ elif st.session_state.active_tab == "presales" and role not in ("employee",):
 
     with _ps_t2:
         _ip_df = df[_POC_MASK & df["status"].isin(_ACTIVE_STATUSES)].copy()
-        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 12px">'
+        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 10px">'
                     'POC / Presales projects currently in development</p>', unsafe_allow_html=True)
-        _render_poc_table(_ip_df, "poc_ip")
+        with st.container(border=True):
+            _render_poc_table(_ip_df, "poc_ip")
 
     with _ps_t3:
         _done_df = df[_POC_MASK & (df["status"] == "Completed")].copy()
-        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 12px">'
+        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 10px">'
                     'Successfully completed POC / Presales projects</p>', unsafe_allow_html=True)
-        _render_poc_table(_done_df, "poc_done")
+        with st.container(border=True):
+            _render_poc_table(_done_df, "poc_done")
 
     with _ps_t4:
         _disc_df = df[_POC_MASK & (df["status"] == "Discontinued")].copy()
-        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 12px">'
+        st.markdown('<p style="color:#64748B;font-size:12px;margin:0 0 10px">'
                     'Discontinued POC / Presales projects</p>', unsafe_allow_html=True)
-        _render_poc_table(_disc_df, "poc_disc")
+        with st.container(border=True):
+            _render_poc_table(_disc_df, "poc_disc")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: LICENSE
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "license" and role != "employee":
-    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">License Management</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#1F3B4D;margin-bottom:4px;font-family:Manrope,sans-serif">License Management</h2>', unsafe_allow_html=True)
     st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Track purchased and sold licenses</p>', unsafe_allow_html=True)
 
     def _lc_expiry_badge(end_date: str) -> str:
@@ -3539,7 +5039,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                                f"Expiring in {_lm_dl}d" if _lm_dl is not None else "No expiry date")
                 with st.container(border=True):
                     st.markdown(
-                        f'<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:4px">'
+                        f'<div style="font-size:13px;font-weight:700;color:#1F3B4D;margin-bottom:4px">'
                         f'Manage Notification Emails — {esc(_lm_rec["tool_name"])}</div>'
                         f'<div style="font-size:11px;color:#64748B;margin-bottom:12px">'
                         f'Expiry: <b>{_lm_rec["end_date"] or "—"}</b> &nbsp;|&nbsp; Status: <b>{_lm_status}</b></div>',
@@ -3591,7 +5091,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
             _lc_rec = next((x for x in _licenses_all if x["id"] == st.session_state.lc_edit_id), None)
             if _lc_rec:
                 with st.container(border=True):
-                    st.markdown('<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:10px">Edit Purchased License</div>', unsafe_allow_html=True)
+                    st.markdown('<div style="font-size:13px;font-weight:700;color:#1F3B4D;margin-bottom:10px">Edit Purchased License</div>', unsafe_allow_html=True)
                     _ec1, _ec2 = st.columns(2)
                     _e_tool  = _ec1.text_input("Tool Name *", value=_lc_rec["tool_name"], key="lc_e_tool")
                     _e_seats = _ec2.number_input("No. of Licenses *", min_value=1, value=int(_lc_rec["no_of_licenses"]), step=1, key="lc_e_seats")
@@ -3640,38 +5140,38 @@ elif st.session_state.active_tab == "license" and role != "employee":
         if not _licenses_all:
             st.info("No licenses added yet. Use the form above to add one.")
         else:
-            _lhdr = st.columns([0.3, 2.2, 1.0, 1.3, 1.3, 1.4, 0.5, 0.5, 0.5])
-            for _lc, _ll in zip(_lhdr, ["#", "Tool Name", "Licenses", "Start Date", "End Date", "Status", "", "", ""]):
-                _act = _ll in ("Mail", "Edit", "Del")
-                _lc.markdown(f'<div style="font-size:{"7px" if _act else "9px"};font-weight:600;text-transform:uppercase;color:#94A3B8;'
-                             f'letter-spacing:{"0" if _act else ".6px"};padding:5px 0;border-bottom:2px solid #E2E8F0">{_ll}</div>',
-                             unsafe_allow_html=True)
-            for _lic in _licenses_all:
-                _lr = st.columns([0.3, 2.2, 1.0, 1.3, 1.3, 1.4, 0.5, 0.5, 0.5])
-                _lr[0].markdown(cell(_lic["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
-                _lr[1].markdown(f'<span style="font-size:13px;font-weight:700;color:#111827">{esc(_lic["tool_name"])}</span>', unsafe_allow_html=True)
-                _lr[2].markdown(f'<span style="font-size:13px;font-weight:600;color:#2563EB">{_lic["no_of_licenses"]}</span>', unsafe_allow_html=True)
-                _lr[3].markdown(cell(_lic["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
-                _lr[4].markdown(cell(_lic["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
-                _lr[5].markdown(_lc_expiry_badge(_lic["end_date"]), unsafe_allow_html=True)
-                with _lr[6]:
-                    if st.button("✉", key=f"lc_mail_{_lic['id']}", use_container_width=True):
-                        st.session_state.lc_mail_id = _lic["id"]
-                        st.session_state.lc_edit_id = None
-                        st.rerun()
-                if role in ("admin", "lead", "manager"):
-                    with _lr[7]:
-                        if st.button("✏", key=f"lc_e_{_lic['id']}", help="Edit license", use_container_width=True):
-                            st.session_state.lc_edit_id = _lic["id"]
-                            st.session_state.lc_mail_id = None
-                            st.session_state.sl_edit_id = None
+            with st.container(border=True):
+                _lhdr = st.columns([0.3, 2.2, 1.0, 1.3, 1.3, 1.4, 0.5, 0.5, 0.5])
+                for _lc, _ll in zip(_lhdr, ["#", "Tool Name", "Licenses", "Start Date", "End Date", "Status", "", "", ""]):
+                    _lc.markdown(f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748B;'
+                                 f'letter-spacing:.5px;padding:8px 4px;border-bottom:2px solid #DFE3E7;white-space:nowrap;background:#F8FAFC">{_ll}</div>',
+                                 unsafe_allow_html=True)
+                for _lic in _licenses_all:
+                    _lr = st.columns([0.3, 2.2, 1.0, 1.3, 1.3, 1.4, 0.5, 0.5, 0.5])
+                    _lr[0].markdown(cell(_lic["id"], size="11px", color="#94A3B8"), unsafe_allow_html=True)
+                    _lr[1].markdown(f'<span style="font-size:13px;font-weight:700;color:#111827">{esc(_lic["tool_name"])}</span>', unsafe_allow_html=True)
+                    _lr[2].markdown(f'<span style="font-size:13px;font-weight:600;color:#3F8E91">{_lic["no_of_licenses"]}</span>', unsafe_allow_html=True)
+                    _lr[3].markdown(cell(_lic["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                    _lr[4].markdown(cell(_lic["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                    _lr[5].markdown(_lc_expiry_badge(_lic["end_date"]), unsafe_allow_html=True)
+                    with _lr[6]:
+                        if st.button("✉", key=f"lc_mail_{_lic['id']}", use_container_width=True):
+                            st.session_state.lc_mail_id = _lic["id"]
+                            st.session_state.lc_edit_id = None
                             st.rerun()
-                    with _lr[8]:
-                        if st.button("🗑", key=f"lc_d_{_lic['id']}", help="Delete license", use_container_width=True):
-                            auth.delete_license(_lic["id"])
-                            save_to_excel_async(st.session_state.projects)
-                            st.session_state.toast = {"msg": f'License "{_lic["tool_name"]}" deleted.', "type": "info"}
-                            st.rerun()
+                    if role in ("admin", "lead", "manager"):
+                        with _lr[7]:
+                            if st.button("✏", key=f"lc_e_{_lic['id']}", help="Edit license", use_container_width=True):
+                                st.session_state.lc_edit_id = _lic["id"]
+                                st.session_state.lc_mail_id = None
+                                st.session_state.sl_edit_id = None
+                                st.rerun()
+                        with _lr[8]:
+                            if st.button("🗑", key=f"lc_d_{_lic['id']}", help="Delete license", use_container_width=True):
+                                auth.delete_license(_lic["id"])
+                                save_to_excel_async(st.session_state.projects)
+                                st.session_state.toast = {"msg": f'License "{_lic["tool_name"]}" deleted.', "type": "info"}
+                                st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
     # SUB-TAB 2 — SOLD LICENSE
@@ -3682,7 +5182,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
             _sl_rec = next((x for x in _sold_licenses_all if x["id"] == st.session_state.sl_edit_id), None)
             if _sl_rec:
                 with st.container(border=True):
-                    st.markdown('<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:10px">Edit Sold License</div>', unsafe_allow_html=True)
+                    st.markdown('<div style="font-size:13px;font-weight:700;color:#1F3B4D;margin-bottom:10px">Edit Sold License</div>', unsafe_allow_html=True)
                     _se1, _se2 = st.columns(2)
                     _sl_tool_opts = _purchased_tool_names or [""]
                     _sl_e_tool_idx = _sl_tool_opts.index(_sl_rec["tool_name"]) if _sl_rec["tool_name"] in _sl_tool_opts else 0
@@ -3765,7 +5265,7 @@ elif st.session_state.active_tab == "license" and role != "employee":
                     _ml_status_txt = f"Expiring in {_ml_dl} day(s)"
                 with st.container(border=True):
                     st.markdown(
-                        f'<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:4px">'
+                        f'<div style="font-size:13px;font-weight:700;color:#1F3B4D;margin-bottom:4px">'
                         f'Manage Notification Emails — {esc(_ml_rec["tool_name"])}</div>'
                         f'<div style="font-size:11px;color:#64748B;margin-bottom:12px">'
                         f'Client: <b>{esc(_ml_rec["client"])}</b> &nbsp;|&nbsp; '
@@ -3835,41 +5335,40 @@ elif st.session_state.active_tab == "license" and role != "employee":
         if not _sold_licenses_all:
             st.info("No sold licenses recorded yet. Use the form above to add one.")
         else:
-            _slhdr = st.columns([0.3, 1.8, 1.8, 0.9, 1.2, 1.2, 1.2, 1.5, 0.5, 0.5, 0.5])
-            for _slc, _sll in zip(_slhdr, ["#", "Tool Name", "Client", "Qty", "Start", "End", "Status", "Notes", "", "", ""]):
-                _sact = _sll in ("Mail", "Edit", "Del")
-                _slc.markdown(f'<div style="font-size:{"7px" if _sact else "9px"};font-weight:600;text-transform:uppercase;color:#94A3B8;'
-                              f'letter-spacing:{"0" if _sact else ".6px"};padding:5px 0;border-bottom:2px solid #E2E8F0">{_sll}</div>',
-                              unsafe_allow_html=True)
-            for _sl in _sold_licenses_all:
-                _slr = st.columns([0.3, 1.8, 1.8, 0.9, 1.2, 1.2, 1.2, 1.5, 0.5, 0.5, 0.5])
-                _slr[0].markdown(cell(_sl["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
-                _slr[1].markdown(f'<span style="font-size:12px;font-weight:700;color:#111827">{esc(_sl["tool_name"])}</span>', unsafe_allow_html=True)
-                _slr[2].markdown(f'<span style="font-size:12px;color:#374151">{esc(_sl["client"])}</span>', unsafe_allow_html=True)
-                _slr[3].markdown(f'<span style="font-size:13px;font-weight:600;color:#2563EB">{_sl["no_of_licenses"]}</span>', unsafe_allow_html=True)
-                _slr[4].markdown(cell(_sl["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
-                _slr[5].markdown(cell(_sl["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
-                _slr[6].markdown(_lc_expiry_badge(_sl["end_date"]), unsafe_allow_html=True)
-                _slr[7].markdown(cell(_sl["notes"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
-                # Per-row Mail button — opens the multi-email compose form above
-                with _slr[8]:
-                    if st.button("✉", key=f"sl_mail_{_sl['id']}", use_container_width=True):
-                        st.session_state.sl_mail_id = _sl["id"]
-                        st.session_state.sl_edit_id = None
-                        st.rerun()
-                if role in ("admin", "lead", "manager"):
-                    with _slr[9]:
-                        if st.button("✏", key=f"sl_e_{_sl['id']}", help="Edit sold license", use_container_width=True):
-                            st.session_state.sl_edit_id = _sl["id"]
-                            st.session_state.sl_mail_id = None
-                            st.session_state.lc_edit_id = None
+            with st.container(border=True):
+                _slhdr = st.columns([0.3, 1.8, 1.8, 0.9, 1.2, 1.2, 1.2, 1.5, 0.5, 0.5, 0.5])
+                for _slc, _sll in zip(_slhdr, ["#", "Tool Name", "Client", "Qty", "Start", "End", "Status", "Notes", "", "", ""]):
+                    _slc.markdown(f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748B;'
+                                  f'letter-spacing:.5px;padding:8px 4px;border-bottom:2px solid #DFE3E7;white-space:nowrap;background:#F8FAFC">{_sll}</div>',
+                                  unsafe_allow_html=True)
+                for _sl in _sold_licenses_all:
+                    _slr = st.columns([0.3, 1.8, 1.8, 0.9, 1.2, 1.2, 1.2, 1.5, 0.5, 0.5, 0.5])
+                    _slr[0].markdown(cell(_sl["id"], size="11px", color="#94A3B8"), unsafe_allow_html=True)
+                    _slr[1].markdown(f'<span style="font-size:12px;font-weight:700;color:#111827">{esc(_sl["tool_name"])}</span>', unsafe_allow_html=True)
+                    _slr[2].markdown(f'<span style="font-size:12px;color:#374151">{esc(_sl["client"])}</span>', unsafe_allow_html=True)
+                    _slr[3].markdown(f'<span style="font-size:13px;font-weight:600;color:#3F8E91">{_sl["no_of_licenses"]}</span>', unsafe_allow_html=True)
+                    _slr[4].markdown(cell(_sl["start_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                    _slr[5].markdown(cell(_sl["end_date"] or "—", size="12px", color="#64748B"), unsafe_allow_html=True)
+                    _slr[6].markdown(_lc_expiry_badge(_sl["end_date"]), unsafe_allow_html=True)
+                    _slr[7].markdown(cell(_sl["notes"] or "—", size="11px", color="#64748B"), unsafe_allow_html=True)
+                    with _slr[8]:
+                        if st.button("✉", key=f"sl_mail_{_sl['id']}", use_container_width=True):
+                            st.session_state.sl_mail_id = _sl["id"]
+                            st.session_state.sl_edit_id = None
                             st.rerun()
-                    with _slr[10]:
-                        if st.button("🗑", key=f"sl_d_{_sl['id']}", help="Delete sold license", use_container_width=True):
-                            auth.delete_sold_license(_sl["id"])
-                            save_to_excel_async(st.session_state.projects)
-                            st.session_state.toast = {"msg": f'Sold license deleted.', "type": "info"}
-                            st.rerun()
+                    if role in ("admin", "lead", "manager"):
+                        with _slr[9]:
+                            if st.button("✏", key=f"sl_e_{_sl['id']}", help="Edit sold license", use_container_width=True):
+                                st.session_state.sl_edit_id = _sl["id"]
+                                st.session_state.sl_mail_id = None
+                                st.session_state.lc_edit_id = None
+                                st.rerun()
+                        with _slr[10]:
+                            if st.button("🗑", key=f"sl_d_{_sl['id']}", help="Delete sold license", use_container_width=True):
+                                auth.delete_sold_license(_sl["id"])
+                                save_to_excel_async(st.session_state.projects)
+                                st.session_state.toast = {"msg": f'Sold license deleted.', "type": "info"}
+                                st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: AI AGENT
@@ -3933,7 +5432,7 @@ elif st.session_state.active_tab == "agent" and role in ("admin", "lead", "manag
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "users" and role == "admin":
     _um_h1, _um_h2 = st.columns([5, 1])
-    _um_h1.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">User Management</h2>', unsafe_allow_html=True)
+    _um_h1.markdown('<h2 style="font-size:20px;font-weight:700;color:#1F3B4D;margin-bottom:4px;font-family:Manrope,sans-serif">User Management</h2>', unsafe_allow_html=True)
     _um_h1.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Create accounts, assign roles, and manage password resets</p>', unsafe_allow_html=True)
     if _um_h2.button("Sync Users", use_container_width=True, key="sync_users_btn"):
         sync_users_excel()
@@ -4095,7 +5594,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
         _eu_rec  = next((u for u in _eu_all if u["id"] == st.session_state.user_edit_id), None)
         if _eu_rec:
             with st.container(border=True):
-                st.markdown(f'<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:10px">Edit User — <span style="color:#2563EB">{esc(_eu_rec["name"])}</span></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:13px;font-weight:700;color:#1F3B4D;margin-bottom:10px">Edit User — <span style="color:#3F8E91">{esc(_eu_rec["name"])}</span></div>', unsafe_allow_html=True)
                 _ea, _eb = st.columns(2)
                 _eu_name  = _ea.text_input("Full Name *",    value=_eu_rec["name"],  key="eu_name")
                 _eu_email = _eb.text_input("Email *",        value=_eu_rec["email"], key="eu_email")
@@ -4133,7 +5632,7 @@ elif st.session_state.active_tab == "users" and role == "admin":
         _rp_user  = next((u for u in _rp_users if u["id"] == _rp_uid), None)
         if _rp_user:
             with st.container(border=True):
-                st.markdown(f'<div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">Reset password for <span style="color:#2563EB">{esc(_rp_user["name"])}</span></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:13px;font-weight:700;color:#1F3B4D;margin-bottom:8px">Reset password for <span style="color:#3F8E91">{esc(_rp_user["name"])}</span></div>', unsafe_allow_html=True)
                 rpa, rpb = st.columns([2, 1])
                 _new_pwd = rpa.text_input("New Password (min 6 chars)", type="password", key="rp_new_pwd")
                 rpb.write("")
@@ -4156,65 +5655,66 @@ elif st.session_state.active_tab == "users" and role == "admin":
     _all_users = _users_cache
     st.markdown(f'<p style="color:#64748B;font-size:12px;margin:6px 0 10px"><b>{len(_all_users)}</b> registered users</p>', unsafe_allow_html=True)
 
-    _uhdr = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.45, 0.45, 0.45, 0.45])
-    for _col, _lbl in zip(_uhdr, ["ID", "Name", "Email", "Role", "Active", "", "", "", ""]):
-        _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        _uhdr = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.45, 0.45, 0.45, 0.45])
+        for _col, _lbl in zip(_uhdr, ["ID", "Name", "Email", "Role", "Active", "", "", "", ""]):
+            _col.markdown(f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748B;letter-spacing:.5px;padding:8px 4px;border-bottom:2px solid #DFE3E7;white-space:nowrap;background:#F8FAFC">{_lbl}</div>', unsafe_allow_html=True)
 
-    _role_colors = {"admin": "#1D4ED8", "lead": "#065F46", "manager": "#92400E", "employee": "#374151", "sales": "#0369A1"}
-    for _u in _all_users:
-        _uc = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.45, 0.45, 0.45, 0.45])
-        _uc[0].markdown(cell(_u["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
-        _uc[1].markdown(f'<span style="font-size:12px;font-weight:600;color:#111827">{esc(_u["name"])}</span>', unsafe_allow_html=True)
-        _uc[2].markdown(cell(_u["email"]), unsafe_allow_html=True)
-        _rc = _role_colors.get(_u["role"], "#374151")
-        _uc[3].markdown(f'<span style="font-size:11px;font-weight:700;color:{_rc}">{_u["role"].upper()}</span>', unsafe_allow_html=True)
-        _uc[4].markdown(f'<span style="font-size:11px;font-weight:700;color:{"#10B981" if _u["is_active"] else "#EF4444"}">{"Yes" if _u["is_active"] else "No"}</span>', unsafe_allow_html=True)
+        _role_colors = {"admin": "#3F8E91", "lead": "#2E7D5B", "manager": "#966D17", "employee": "#4E5860", "sales": "#5FA9AB"}
+        for _u in _all_users:
+            _uc = st.columns([0.3, 1.6, 2.2, 1.0, 0.7, 0.45, 0.45, 0.45, 0.45])
+            _uc[0].markdown(cell(_u["id"], size="10px", color="#94A3B8"), unsafe_allow_html=True)
+            _uc[1].markdown(f'<span style="font-size:12px;font-weight:600;color:#111827">{esc(_u["name"])}</span>', unsafe_allow_html=True)
+            _uc[2].markdown(cell(_u["email"]), unsafe_allow_html=True)
+            _rc = _role_colors.get(_u["role"], "#374151")
+            _uc[3].markdown(f'<span style="font-size:11px;font-weight:700;color:{_rc}">{_u["role"].upper()}</span>', unsafe_allow_html=True)
+            _uc[4].markdown(f'<span style="font-size:11px;font-weight:700;color:{"#10B981" if _u["is_active"] else "#EF4444"}">{"Yes" if _u["is_active"] else "No"}</span>', unsafe_allow_html=True)
 
-        with _uc[5]:
-            st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
-            if st.button("✏", key=f"eu_{_u['id']}", help="Edit user", use_container_width=True):
-                st.session_state.user_edit_id = _u["id"]
-                st.session_state.reset_pwd_uid = None
-                st.rerun()
-
-        with _uc[6]:
-            st.markdown('<span class="act-warn-marker"></span>', unsafe_allow_html=True)
-            if st.button("🔑", key=f"rp_{_u['id']}", help="Reset password", use_container_width=True):
-                st.session_state.reset_pwd_uid = _u["id"]
-                st.session_state.user_edit_id = None
-                st.rerun()
-
-        _tog_lbl = "🔒" if _u["is_active"] else "🔓"
-        _tog_tip = "Deactivate" if _u["is_active"] else "Activate"
-        with _uc[7]:
-            st.markdown('<span class="act-warn-marker"></span>', unsafe_allow_html=True)
-            if st.button(_tog_lbl, key=f"tog_{_u['id']}", help=_tog_tip, use_container_width=True):
-                if _u["id"] != cu["id"]:
-                    auth.set_active(_u["id"], not _u["is_active"])
-                    sync_users_excel()
-                    save_to_excel_async(st.session_state.projects)
-                    st.session_state.toast = {"msg": f'User {"deactivated" if _u["is_active"] else "activated"}.', "type": "info"}
+            with _uc[5]:
+                st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
+                if st.button("✏", key=f"eu_{_u['id']}", help="Edit user", use_container_width=True):
+                    st.session_state.user_edit_id = _u["id"]
+                    st.session_state.reset_pwd_uid = None
                     st.rerun()
-                else:
-                    st.warning("You cannot deactivate your own account.")
 
-        with _uc[8]:
-            st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
-            if st.button("🗑", key=f"du_{_u['id']}", help="Delete user", use_container_width=True):
-                if _u["id"] != cu["id"]:
-                    auth.delete_user(_u["id"])
-                    sync_users_excel()
-                    save_to_excel_async(st.session_state.projects)
-                    st.session_state.toast = {"msg": f'User "{_u["name"]}" deleted.', "type": "info"}
+            with _uc[6]:
+                st.markdown('<span class="act-warn-marker"></span>', unsafe_allow_html=True)
+                if st.button("🔑", key=f"rp_{_u['id']}", help="Reset password", use_container_width=True):
+                    st.session_state.reset_pwd_uid = _u["id"]
+                    st.session_state.user_edit_id = None
                     st.rerun()
-                else:
-                    st.warning("You cannot delete your own account.")
+
+            _tog_lbl = "🔒" if _u["is_active"] else "🔓"
+            _tog_tip = "Deactivate" if _u["is_active"] else "Activate"
+            with _uc[7]:
+                st.markdown('<span class="act-warn-marker"></span>', unsafe_allow_html=True)
+                if st.button(_tog_lbl, key=f"tog_{_u['id']}", help=_tog_tip, use_container_width=True):
+                    if _u["id"] != cu["id"]:
+                        auth.set_active(_u["id"], not _u["is_active"])
+                        sync_users_excel()
+                        save_to_excel_async(st.session_state.projects)
+                        st.session_state.toast = {"msg": f'User {"deactivated" if _u["is_active"] else "activated"}.', "type": "info"}
+                        st.rerun()
+                    else:
+                        st.warning("You cannot deactivate your own account.")
+
+            with _uc[8]:
+                st.markdown('<span class="act-del-marker"></span>', unsafe_allow_html=True)
+                if st.button("🗑", key=f"du_{_u['id']}", help="Delete user", use_container_width=True):
+                    if _u["id"] != cu["id"]:
+                        auth.delete_user(_u["id"])
+                        sync_users_excel()
+                        save_to_excel_async(st.session_state.projects)
+                        st.session_state.toast = {"msg": f'User "{_u["name"]}" deleted.', "type": "info"}
+                        st.rerun()
+                    else:
+                        st.warning("You cannot delete your own account.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: TASKS  (all roles — employees see only their own tasks)
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "settings" and role in ("admin", "lead", "manager"):
-    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">Settings</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 style="font-size:20px;font-weight:700;color:#1F3B4D;margin-bottom:4px;font-family:Manrope,sans-serif">Settings</h2>', unsafe_allow_html=True)
     st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Configure integrations and notifications</p>', unsafe_allow_html=True)
 
     with st.expander("Outlook Email Settings", expanded=True):
@@ -4300,7 +5800,7 @@ elif st.session_state.active_tab == "tasks":
             st.markdown(_POPUP_SAVED, unsafe_allow_html=True)
             st.session_state.save_popup = None
 
-        st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">My Tasks</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 style="font-size:20px;font-weight:700;color:#1F3B4D;margin-bottom:4px;font-family:Manrope,sans-serif">My Tasks</h2>', unsafe_allow_html=True)
         st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Tasks assigned to you — update your progress here</p>', unsafe_allow_html=True)
 
         _my_tasks = auth.get_user_tasks(cu["id"])
@@ -4373,7 +5873,7 @@ elif st.session_state.active_tab == "tasks":
 
     else:
         # ── Admin / Lead / Manager: create + view all tasks ───────────────────
-        st.markdown('<h2 style="font-size:20px;font-weight:700;color:#0F172A;margin-bottom:4px">Task Management</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 style="font-size:20px;font-weight:700;color:#1F3B4D;margin-bottom:4px;font-family:Manrope,sans-serif">Task Management</h2>', unsafe_allow_html=True)
         st.markdown('<p style="color:#64748B;font-size:12px;margin-bottom:16px">Assign and track tasks for your team</p>', unsafe_allow_html=True)
 
         def _render_my_tasks_panel(key_prefix):
@@ -4469,8 +5969,8 @@ elif st.session_state.active_tab == "tasks":
                 _preview_cfg = auth.get_email_settings()
                 if _preview_cfg["outlook_email"]:
                     st.markdown(
-                        f'<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;'
-                        f'padding:8px 14px;font-size:11px;color:#1D4ED8;margin-bottom:10px">'
+                        f'<div style="background:#EFF7F7;border:1px solid #B6DADB;border-radius:8px;'
+                        f'padding:8px 14px;font-size:11px;color:#3F8E91;margin-bottom:10px">'
                         f'Notification email will be sent from: <b>{_preview_cfg["outlook_email"]}</b></div>',
                         unsafe_allow_html=True)
                 else:
@@ -4556,7 +6056,7 @@ elif st.session_state.active_tab == "tasks":
                         return
                     _thdr = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4, 0.4])
                     for _col, _lbl in zip(_thdr, ["Task", "Assigned To", "Assigned By", "Status", "Progress", "Start Date", "Due Date", "", ""]):
-                        _col.markdown(f'<div style="font-size:9px;font-weight:600;text-transform:uppercase;color:#94A3B8;letter-spacing:.6px;padding:5px 0;border-bottom:2px solid #E2E8F0">{_lbl}</div>', unsafe_allow_html=True)
+                        _col.markdown(f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748B;letter-spacing:.5px;padding:8px 4px;border-bottom:2px solid #DFE3E7;white-space:nowrap;background:#F8FAFC">{_lbl}</div>', unsafe_allow_html=True)
 
                     for _t in tasks:
                         _tc = st.columns([2.0, 1.6, 1.5, 1.4, 0.9, 1.0, 1.0, 0.4, 0.4])
@@ -4586,7 +6086,7 @@ elif st.session_state.active_tab == "tasks":
                         _edit_key = f"editing_task_{tab_sfx}_{_t['id']}"
                         with _tc[7]:
                             st.markdown('<span class="act-edit-marker"></span>', unsafe_allow_html=True)
-                            if st.button("✏️", key=f"edit_btn_{tab_sfx}_{_t['id']}", help="Edit task", use_container_width=True):
+                            if st.button("✏", key=f"edit_btn_{tab_sfx}_{_t['id']}", help="Edit task", use_container_width=True):
                                 st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
                                 st.rerun()
                         with _tc[8]:
@@ -4600,7 +6100,7 @@ elif st.session_state.active_tab == "tasks":
                         # ── Inline edit form ───────────────────────────────────
                         if st.session_state.get(_edit_key, False):
                             with st.container(border=True):
-                                st.markdown('<div style="font-size:12px;font-weight:700;color:#1D4ED8;margin-bottom:8px">Edit Task</div>', unsafe_allow_html=True)
+                                st.markdown('<div style="font-size:12px;font-weight:700;color:#3F8E91;margin-bottom:8px">Edit Task</div>', unsafe_allow_html=True)
                                 _ea, _eb = st.columns(2)
                                 _e_title = _ea.text_input("Title *", value=_t["title"], key=f"etitle_{tab_sfx}_{_t['id']}")
                                 _e_desc  = st.text_area("Description", value=_t.get("description", ""), key=f"edesc_{tab_sfx}_{_t['id']}", height=70)
@@ -4634,7 +6134,7 @@ elif st.session_state.active_tab == "tasks":
                             else:
                                 _wch = st.columns([1.2, 3.5, 2.0, 1.8])
                                 for _c, _l in zip(_wch, ["Week", "Comment", "Employee", "Submitted"]):
-                                    _c.markdown(f'<div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;border-bottom:1px solid #E2E8F0;padding-bottom:4px">{_l}</div>', unsafe_allow_html=True)
+                                    _c.markdown(f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748B;border-bottom:2px solid #DFE3E7;padding:6px 2px;background:#F8FAFC">{_l}</div>', unsafe_allow_html=True)
                                 for _wc in _wc_list:
                                     _wr = st.columns([1.2, 3.5, 2.0, 1.8])
                                     _wk_d = date.fromisoformat(_wc["week_start"])
@@ -4690,7 +6190,7 @@ elif st.session_state.active_tab == "tasks":
                     else:
                         _ach = st.columns([1.5, 2.5, 2.5, 1.8, 1.8])
                         for _c, _l in zip(_ach, ["Week", "Task", "Employee", "Comment", "Submitted"]):
-                            _c.markdown(f'<div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#94A3B8;border-bottom:1px solid #E2E8F0;padding-bottom:4px">{_l}</div>', unsafe_allow_html=True)
+                            _c.markdown(f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748B;border-bottom:2px solid #DFE3E7;padding:6px 2px;background:#F8FAFC">{_l}</div>', unsafe_allow_html=True)
                         for _ac in _all_comments:
                             _ar = st.columns([1.5, 2.5, 2.5, 1.8, 1.8])
                             _wk_d = date.fromisoformat(_ac["week_start"])
