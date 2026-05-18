@@ -93,10 +93,103 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    try:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY,
+                name TEXT DEFAULT '',
+                client TEXT DEFAULT '',
+                lead TEXT DEFAULT '',
+                employee TEXT DEFAULT '',
+                status TEXT DEFAULT '',
+                proj_type TEXT DEFAULT '',
+                start TEXT DEFAULT '',
+                end TEXT DEFAULT '',
+                due_date TEXT DEFAULT '',
+                po TEXT DEFAULT '',
+                desc TEXT DEFAULT '',
+                manual_hrs TEXT DEFAULT '',
+                auto_hrs TEXT DEFAULT '',
+                cost_per_hr TEXT DEFAULT '',
+                hours_saved TEXT DEFAULT '',
+                cost_saved TEXT DEFAULT '',
+                roi_pct TEXT DEFAULT '',
+                is_new INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                ckpt_pdd_sdd_start TEXT DEFAULT '',
+                ckpt_pdd_sdd_end TEXT DEFAULT '',
+                ckpt_development_start TEXT DEFAULT '',
+                ckpt_development_end TEXT DEFAULT '',
+                ckpt_uat_start TEXT DEFAULT '',
+                ckpt_uat_end TEXT DEFAULT '',
+                ckpt_deployment_start TEXT DEFAULT '',
+                ckpt_deployment_end TEXT DEFAULT '',
+                created_at TEXT DEFAULT '',
+                updated_at TEXT DEFAULT ''
+            );
+        """)
+        conn.commit()
+    except Exception:
+        pass
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
         _seed_admin(c)
         conn.commit()
+    conn.close()
+
+
+_PROJECT_COLS = [
+    "id","name","client","lead","employee","status","proj_type","start","end","due_date","po","desc",
+    "manual_hrs","auto_hrs","cost_per_hr","hours_saved","cost_saved","roi_pct","is_new","is_active",
+    "ckpt_pdd_sdd_start","ckpt_pdd_sdd_end","ckpt_development_start","ckpt_development_end",
+    "ckpt_uat_start","ckpt_uat_end","ckpt_deployment_start","ckpt_deployment_end",
+]
+
+
+def get_all_projects() -> list:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"SELECT {','.join(_PROJECT_COLS)} FROM projects ORDER BY id")
+    rows = c.fetchall()
+    conn.close()
+    return [dict(zip(_PROJECT_COLS, r)) for r in rows]
+
+
+def upsert_projects(records: list):
+    """Persist the full project list to SQLite (upsert by id, delete removed rows)."""
+    if not records:
+        return
+    conn = get_conn()
+    c = conn.cursor()
+    now = _now()
+    incoming_ids = []
+    rows_to_save = []
+    for r in records:
+        try:
+            pid = int(float(str(r.get("id", "") or 0)))
+        except Exception:
+            pid = 0
+        if not pid:
+            continue
+        incoming_ids.append(pid)
+        vals = [pid] + [str(r.get(col, "") or "") for col in _PROJECT_COLS[1:]]
+        vals[_PROJECT_COLS.index("is_new")] = 1 if r.get("is_new") else 0
+        vals[_PROJECT_COLS.index("is_active")] = 1 if r.get("is_active", True) else 0
+        rows_to_save.append(vals)
+    if incoming_ids:
+        placeholders = ",".join("?" * len(incoming_ids))
+        c.execute(f"DELETE FROM projects WHERE id NOT IN ({placeholders})", incoming_ids)
+    for vals in rows_to_save:
+        pid = vals[0]
+        c.execute("SELECT id FROM projects WHERE id=?", (pid,))
+        if c.fetchone():
+            set_clause = ", ".join(f"{col}=?" for col in _PROJECT_COLS[1:]) + ", updated_at=?"
+            c.execute(f"UPDATE projects SET {set_clause} WHERE id=?", vals[1:] + [now, pid])
+        else:
+            full_cols = _PROJECT_COLS + ["created_at", "updated_at"]
+            ph = ",".join(["?"] * len(full_cols))
+            c.execute(f"INSERT INTO projects ({','.join(full_cols)}) VALUES ({ph})", vals + [now, now])
+    conn.commit()
     conn.close()
 
 

@@ -342,70 +342,21 @@ def _file_upload_dialog():
 
 
 def save_to_excel(df: pd.DataFrame) -> bool:
-    import tempfile, shutil
-    out = df.copy()
-    for col in EXCEL_COLS:
-        if col not in out.columns:
-            out[col] = ""
-    _poc_statuses_excel = {"Presales", "Internal POC", "External POC"}
-    presales_df = out[out["status"].str.strip().isin(_poc_statuses_excel)][EXCEL_COLS].reset_index(drop=True)
-    license_records = auth.get_all_licenses()
-    license_df = pd.DataFrame(license_records) if license_records else pd.DataFrame(
-        columns=["id", "tool_name", "no_of_licenses", "start_date", "end_date", "created_at"]
-    )
-    user_records = auth.get_all_users()
-    user_df = pd.DataFrame(user_records, columns=["id","name","email","role","is_active","created_at"]) \
-              if user_records else pd.DataFrame(columns=["id","name","email","role","is_active","created_at"])
-    sold_records = auth.get_all_sold_licenses()
-    sold_df = pd.DataFrame(sold_records) if sold_records else pd.DataFrame(
-        columns=["id","tool_name","client","no_of_licenses","start_date","end_date","notes","created_at"]
-    )
-    task_records = auth.get_all_tasks_asc()
-    task_df = pd.DataFrame(task_records) if task_records else pd.DataFrame(
-        columns=["id","title","description","status","progress","due_date","start_date",
-                 "created_at","updated_at","comment","assigned_to","assigned_to_email",
-                 "assigned_by","assigned_by_email"]
-    )
-    comment_records = auth.get_all_comments_for_excel()
-    comment_df = pd.DataFrame(comment_records) if comment_records else pd.DataFrame(
-        columns=["id","task_id","task_title","employee_name","employee_email","comment","week_start","created_at"]
-    )
-    task_df_excel = task_df.drop(columns=["comment"], errors="ignore")
-    if gsheets.is_configured():
-        return gsheets.write_all({
-            "Project Details": out[EXCEL_COLS],
-            "Presales_POC": presales_df,
-            "License": license_df,
-            "Sold_License": sold_df,
-            "Users": user_df,
-            "Tasks": task_df_excel,
-            "Comments": comment_df,
-        })
-    # Fall back to local file
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", dir=os.path.dirname(EXCEL_PATH))
-    os.close(tmp_fd)
-    _moved = False
+    """Save projects to SQLite (source of truth). Also syncs to Google Sheets if configured."""
     try:
-        with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
-            out[EXCEL_COLS].to_excel(writer, sheet_name="Project Details", index=False)
-            presales_df.to_excel(writer, sheet_name="Presales_POC", index=False)
-            license_df.to_excel(writer, sheet_name="License", index=False)
-            sold_df.to_excel(writer, sheet_name="Sold_License", index=False)
-            user_df.to_excel(writer, sheet_name="Users", index=False)
-            task_df_excel.to_excel(writer, sheet_name="Tasks", index=False)
-            comment_df.to_excel(writer, sheet_name="Comments", index=False)
-        shutil.move(tmp_path, EXCEL_PATH)
-        _moved = True
+        auth.upsert_projects(df.to_dict("records"))
     except Exception:
-        pass
-    finally:
-        if not _moved:
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
-    return _moved
+        return False
+    if gsheets.is_configured():
+        try:
+            out = df.copy()
+            for col in EXCEL_COLS:
+                if col not in out.columns:
+                    out[col] = ""
+            gsheets.write_all({"Project Details": out[EXCEL_COLS]})
+        except Exception:
+            pass
+    return True
 
 
 def save_to_excel_async(df: pd.DataFrame):
@@ -421,33 +372,43 @@ def save_to_excel_async(df: pd.DataFrame):
     threading.Thread(target=_write, daemon=True).start()
 
 def load_from_excel() -> pd.DataFrame:
+    """Load projects from SQLite. On first run, migrates from Excel/Google Sheets if available."""
+    records = auth.get_all_projects()
+    if records:
+        df = pd.DataFrame(records)
+        for col in EXCEL_COLS:
+            if col not in df.columns:
+                df[col] = ""
+        return df
+    # First run: try to migrate from Google Sheets
     if gsheets.is_configured():
-        df = gsheets.read_sheet("Project Details")
-        if not df.empty:
-            for col in EXCEL_COLS:
-                if col not in df.columns:
-                    df[col] = ""
-            return df
+        try:
+            df = gsheets.read_sheet("Project Details")
+            if not df.empty:
+                for col in EXCEL_COLS:
+                    if col not in df.columns:
+                        df[col] = ""
+                auth.upsert_projects(df.to_dict("records"))
+                return df
+        except Exception:
+            pass
+    # First run: try to migrate from local Excel file
     if os.path.exists(EXCEL_PATH):
         try:
-            return pd.read_excel(EXCEL_PATH, sheet_name="Project Details", dtype=str, engine="openpyxl").fillna("")
+            df = pd.read_excel(EXCEL_PATH, sheet_name="Project Details", dtype=str, engine="openpyxl").fillna("")
+            if not df.empty:
+                auth.upsert_projects(df.to_dict("records"))
+                return df
         except Exception:
-            try:
-                return pd.read_excel(EXCEL_PATH, dtype=str, engine="openpyxl").fillna("")
-            except Exception:
-                import shutil
-                try:
-                    shutil.move(EXCEL_PATH, EXCEL_PATH + ".corrupted.bak")
-                except Exception:
-                    os.remove(EXCEL_PATH)
+            pass
+    # Fallback: seed with BASE_PROJECTS
     df = pd.DataFrame(BASE_PROJECTS)
-    save_to_excel(df)
+    auth.upsert_projects(df.to_dict("records"))
     return df
 
+
 def excel_mtime() -> float:
-    if gsheets.is_configured():
-        return 0.0
-    return os.path.getmtime(EXCEL_PATH) if os.path.exists(EXCEL_PATH) else 0.0
+    return 0.0
 
 
 # ── USERS EXCEL HELPERS ───────────────────────────────────────────────────────
@@ -643,23 +604,6 @@ def md_to_html(text: str) -> str:
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 if "projects" not in st.session_state:
     st.session_state.projects = load_from_excel()
-    # Sync all data into SQLite on first load (order matters: users → tasks → comments)
-    if "excel_tasks_imported" not in st.session_state:
-        if gsheets.is_configured():
-            _u = gsheets.read_sheet("Users")
-            _t = gsheets.read_sheet("Tasks")
-            _c = gsheets.read_sheet("Comments")
-            if not _u.empty:
-                auth.sync_users_from_df(_u)
-            if not _t.empty:
-                auth.sync_tasks_from_df(_t)
-            if not _c.empty:
-                auth.sync_comments_from_df(_c)
-        else:
-            auth.sync_users_from_excel(USERS_EXCEL_PATH)
-            auth.sync_tasks_from_excel(EXCEL_PATH)
-            auth.sync_comments_from_excel(EXCEL_PATH)
-        st.session_state.excel_tasks_imported = True
 if "is_active" not in st.session_state.projects.columns:
     st.session_state.projects["is_active"] = True
 if "proj_type" not in st.session_state.projects.columns:
